@@ -595,10 +595,11 @@ sub _saneuid {
 sub _makeParticipant {
   my ($Self, $Calendar, $Participants, $VAttendee, $role) = @_;
 
-  my $id = $VAttendee->{value};
+  return unless $VAttendee->{value};
   return unless $id;
   $id =~ s/^mailto://i;
   return if $id eq '';
+  $id = _hexkey(lc $id);
 
   $Participants->{$id} ||= {};
 
@@ -1054,7 +1055,7 @@ sub _getEventsFromVCalendar {
 
         my $size = $Attach->{params}{size}[0];
 
-        $Links{$uri} = {
+        $Links{_hexkey($uri)} = {
           href => $uri,
           rel => 'enclosure',
           defined $filename ? (title => $filename) : (),
@@ -1065,7 +1066,7 @@ sub _getEventsFromVCalendar {
       foreach my $URL (@{$VEvent->{properties}{url} || []}) {
         my $uri = $URL->{value};
         next unless $uri;
-        $Links{$uri} = { href => $uri };
+        $Links{_hexkey($uri)} = { href => $uri };
       }
 
       # }}}
