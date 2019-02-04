@@ -559,7 +559,6 @@ sub _saneuid {
   return unless $uid;
   return if $uid =~ m/\s/;
   return if $uid =~ m/[\x7f-\xff]/;
-  return if length($uid) < 8;
   # any other sanity checks?
   return 1;
 }
@@ -1505,9 +1504,7 @@ sub _argsToVEvents {
     for my $id (sort keys %{$Args->{alerts}}) {
       my $Alert = $Args->{alerts}{$id};
 
-      my $Type          = $Alert->{action}{type} // '';
-      my $Recipients    = $Alert->{action}{recipients} // [];
-      my $Uri           = $Alert->{action}{uri} // '';
+      my $Type          = $Alert->{action} // '';
       my $Offset        = $Alert->{offset};
       my $Sign          = $Alert->{relativeTo} =~ m/before/ ? '-' : '';
       my $Loc1          = $Alert->{relativeTo} =~ m/end/ ? "ends" : "starts";
@@ -1524,7 +1521,7 @@ sub _argsToVEvents {
             : "'$Args->{title}' $Loc2 $Minutes minutes ago"),
         );
       }
-      elsif ($Type eq 'email' || $Type eq 'uri') {
+      elsif ($Type eq 'email') {
         my ($Summary, $Description);
 
         if ($Sign eq '-') {
@@ -1546,12 +1543,8 @@ sub _argsToVEvents {
             $Args->{description},
             # XXX more
           ),
-          (map { ( attendee => "MAILTO:$_" ) } @$Recipients), # XXX naive?
         );
-
-        if ($Type eq 'uri') {
-          $VAlarm->add_property("X-URI", $Uri);
-        }
+          #(map { ( attendee => "MAILTO:$_" ) } @$Recipients), # XXX naive?
       }
       else {
         confess "Unknown alarm type $Type";
@@ -1561,8 +1554,8 @@ sub _argsToVEvents {
       $VAlarm->add_property(trigger => "${Sign}$Offset");
       $VAlarm->add_property(related => 'end') if $Alert->{relativeTo} =~ m/end/;
 
-      if ($Alert->{action}{acknowledged}) {
-        $VAlarm->add_property(acknowledged => $Self->_makeZTime($Alert->{action}{acknowledged}));
+      if ($Alert->{acknowledged}) {
+        $VAlarm->add_property(acknowledged => $Self->_makeZTime($Alert->{acknowledged}));
       }
 
       $VEvent->add_entry($VAlarm);
@@ -1941,71 +1934,6 @@ sub vcalendarToEvents {
   return map { $map{$_} } sort keys %map;
 }
 
-=head2 $self->UpdateAddressSet($DisplayName, $EmailAddress)
-
-Set the address set and display name for the calendar user (if supported)
-
-=cut
-
-sub UpdateAddressSet {
-  my ($Self, $NewDisplayName, $NewAddressSet) = @_;
-
-  my ($DisplayName, $AddressSet) = $Self->GetProps(\$Self->{principal}, 'D:displayname', [ 'C:calendar-user-address-set', 'D:href' ]);
-
-  if (!$AddressSet || $AddressSet ne "mailto:" . $NewAddressSet ||
-      !$DisplayName || $DisplayName ne $NewDisplayName) {
-    $Self->Request(
-      'PROPPATCH',
-      "",
-      x('D:propertyupdate', $Self->NS(),
-        x('D:set',
-          x('D:prop',
-            x('D:displayname', $NewDisplayName),
-            x('C:calendar-user-address-set', "mailto:" . $NewAddressSet),
-          )
-        )
-      )
-    );
-    return 1;
-  }
-
-  return 0;
-}
-
-=head2 $self->GetICal($calendarId, $isFreeBusy)
-
-Given a calender, fetch all the events and generate an ical format file
-suitable for import into a client.
-
-=cut
-
-sub GetICal {
-  my $Self = shift;
-  my $calendarId = shift;
-  my $isFreeBusy = shift;
-
-  confess "Need a calendarId" unless $calendarId;
-
-  my $Calendars = $Self->GetCalendars();
-  foreach my $Cal (@$Calendars) {
-    next unless $calendarId eq $Cal->{id};
-    my ($Events, $Errors) = $isFreeBusy ?
-                            $Self->GetFreeBusy($calendarId) :
-                            $Self->GetEvents($calendarId);
-    return undef if @$Errors;
-    $Self->_stripNonICal($_) for @$Events;
-    my $VCalendar = $Self->_argsToVCalendar($Events,
-      method => 'PUBLISH',
-      'x-wr-calname' => $Cal->{name},
-      'x-wr-timezone' => $Cal->{timeZone},
-      'x-apple-calendar-color' => $Cal->{color},
-      # XXX - do we want to add our sync-token here or something?
-    );
-    return ($VCalendar->as_string(), $Cal);
-  }
-  return undef; # 404
-}
-
 sub _quotekey {
   my $key = shift;
   $key =~ s/\~/~0/gs;
@@ -2097,8 +2025,8 @@ sub _stripNonICal {
   my $Event = shift;
 
   delete $Event->{alerts};
-  delete $Event->{attendees};
-  delete $Event->{organizer};
+  delete $Event->{participants};
+  delete $Event->{replyTo};
 
   foreach my $exception (values %{$Event->{exceptions}}) {
     next unless $exception;
@@ -2168,4 +2096,4 @@ EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 =cut
 
-1; # End of Test::JSCalendar
+1; # End of Text::JSCalendar
