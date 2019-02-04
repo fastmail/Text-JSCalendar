@@ -20,6 +20,7 @@ use MIME::Types;
 use Digest::SHA qw(sha1_hex);
 use URI::Escape qw(uri_unescape);
 use Data::Dumper;
+use JSON;
 
 use Text::JSCalendar::TimeZones;
 
@@ -32,11 +33,6 @@ BEGIN {
   no warnings 'redefine';
   *Data::ICal::Entry::Alarm::optional_unique_properties = sub { @properties };
 }
-
-our (
-  $DefaultCalendarColour,
-  $DefaultDisplayName,
-);
 
 our $UTC = DateTime::TimeZone::UTC->new();
 our $FLOATING = DateTime::TimeZone::Floating->new();
@@ -53,44 +49,18 @@ my $BoT = '1970-01-01T00:00:00';
 my $EoT = '2038-01-19T00:00:00';
 
 my (
-  %WeekDayNames,
-  %WeekDayNamesReverse,
-  %DaysByName,
-  %DaysByIndex,
+  %ValidDay,
+  %ValidFrequency,
+  %EventKeys,
   %ColourNames,
-  @Frequencies,
   %RecurrenceProperties,
   %UTCLinks,
   %MustBeTopLevel,
-  %EventKeys,
 );
 
 BEGIN {
-  %WeekDayNames = (
-    su => 'sunday',
-    mo => 'monday',
-    tu => 'tuesday',
-    we => 'wednesday',
-    th => 'thursday',
-    fr => 'friday',
-    sa => 'saturday',
-  );
-  %WeekDayNamesReverse = reverse %WeekDayNames;
-
-  %DaysByName = (
-    su => 0,
-    mo => 1,
-    tu => 2,
-    we => 3,
-    th => 4,
-    fr => 5,
-    sa => 6,
-  );
-
-  %DaysByIndex           = reverse %DaysByName;
-  $DefaultCalendarColour = '#0252D4';
-  $DefaultDisplayName    = 'Untitled Calendar';
-  @Frequencies           = qw{yearly monthly weekly daily hourly minutely secondly};
+  %ValidDay = map { $_ => 1 } qw(su mo tu we th fr sa);
+  %ValidFrequency = map { $_ => 1 } qw(yearly monthly weekly daily hourly minutely secondly);
 
   %EventKeys = (
     '' => {
@@ -457,7 +427,7 @@ sub _fixColour {
   my $color = lc(shift || '');
 
   return $color if $ColourNames{$color};
-  return $DefaultCalendarColour unless $color =~ m/^\s*(\#[a-f0-9]{3,8})\s*$/;
+  confess("unparseable color: $color") unless $color =~ m/^\s*(\#[a-f0-9]{3,8})\s*$/;
   $color = $1;
   return uc($color) if length($color) == 7;
 
@@ -471,7 +441,7 @@ sub _fixColour {
     return uc(substr($color,0,7));
   }
 
-  return $DefaultCalendarColour;
+  confess("invalid color") unless $color =~ m/^\s*(\#[a-f0-9]{3,8})\s*$/;
 }
 
 sub _BYDAY2byDay {
@@ -483,7 +453,7 @@ sub _BYDAY2byDay {
     confess 'Recurrence BYDAY-weekday not specified';
   }
 
-  unless ($WeekDayNames{$Day}) {
+  unless ($ValidDay{lc $Day}) {
     confess 'Invalid recurrence BYDAY-weekday';
   }
 
@@ -494,7 +464,7 @@ sub _BYDAY2byDay {
   }
 
   return {
-    day => $WeekDayNames{$Day},
+    day => lc $Day,
     $Count ? (nthOfPeriod => int($Count)) : (),
   };
 }
@@ -510,10 +480,11 @@ sub _byDay2BYDAY {
     confess 'Recurrence byDay is not an object';
   }
 
-  my $Day          = $WeekDayNamesReverse{$byDay->{day}};
-  unless ($Day) {
+  my $Day = $byDay->{day};
+  unless ($Day and $ValidDay{lc $Day}) {
     confess 'Recurrence byDay is not a known day';
   }
+
   my $Prefix = '';
   $Prefix = int($byDay->{nthOfPeriod}) if $byDay->{nthOfPeriod};
 
@@ -588,6 +559,7 @@ sub _saneuid {
   return unless $uid;
   return if $uid =~ m/\s/;
   return if $uid =~ m/[\x7f-\xff]/;
+  return if length($uid) < 8;
   # any other sanity checks?
   return 1;
 }
@@ -723,7 +695,6 @@ sub CompareEvents {
   return _safeeq($E1, $E2);
 }
 
-
 sub _getEventsFromVCalendar {
   my ($Self, $VCalendar) = @_;
 
@@ -826,8 +797,8 @@ sub _getEventsFromVCalendar {
 
         if (exists $RRULE{freq}) {
           my $freq = lc $RRULE{freq};
-          unless (grep { $_ eq $freq } @Frequencies) {
-            confess "$uid: Invalid recurrence FREQ ($RRULE{freq})";
+          unless ($ValidFrequency{$freq}) {
+            confess "$uid: Invalid recurrence FREQ ($freq)";
           }
 
           $Recurrence{frequency} = $freq;
@@ -859,13 +830,13 @@ sub _getEventsFromVCalendar {
 
         if (exists $RRULE{wkst}) {
           my $wkst = lc $RRULE{wkst};
-          unless ($WeekDayNames{$wkst}) {
-            confess "$uid: Invalid recurrence WKST ($RRULE{wkst})";
+          unless ($ValidDay{$wkst}) {
+            confess "$uid: Invalid recurrence WKST ($wkst)";
           }
 
           # default is Monday, so don't set a key for it
           if ($wkst ne 'mo') {
-            $Recurrence{firstDayOfWeek} = $WeekDayNames{$wkst};
+            $Recurrence{firstDayOfWeek} = $wkst;
           }
         }
 
@@ -1724,7 +1695,7 @@ sub _makeRecurrence {
   }
 
   if ($Args->{frequency}) {
-    unless (grep { $_ eq $Args->{frequency} } @Frequencies) {
+    unless ($ValidFrequency{$Args->{frequency}}) {
       confess "Invalid recurrence frequency ($Args->{frequency})";
     }
 
@@ -1749,12 +1720,12 @@ sub _makeRecurrence {
   }
 
   if (defined $Args->{firstDayOfWeek}) {
-    unless (exists $DaysByIndex{$Args->{firstDayOfWeek}}) {
+    unless ($ValidDay{$Args->{firstDayOfWeek}}) {
       confess "Invalid recurrence firstDayOfWeek ($Args->{firstDayOfWeek})";
     }
 
-    unless ($Args->{firstDayOfWeek} == 1){
-      $Recurrence{WKST} = uc $DaysByIndex{$Args->{firstDayOfWeek}};
+    unless ($Args->{firstDayOfWeek} eq 'mo') {
+      $Recurrence{WKST} = uc $Args->{firstDayOfWeek};
     }
   }
 
