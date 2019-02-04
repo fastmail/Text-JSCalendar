@@ -99,7 +99,7 @@ BEGIN {
       prodId               => [0, 'string',    0, undef],
       created              => [0, 'utcdate',   0, undef],
       updated              => [0, 'utcdate',   1, undef],
-      sequence             => [0, 'number',    0, undef],
+      sequence             => [0, 'number',    0, 0],
       title                => [0, 'string',    0, ''],
       description          => [0, 'string',    0, ''],
       links                => [0, 'object',    0, undef],
@@ -113,11 +113,12 @@ BEGIN {
       recurrenceRule       => [0, 'object',    0, undef],
       recurrenceOverrides  => [0, 'patch',     0, undef],
       status               => [0, 'string',    0, undef],
-      showAsFree           => [0, 'bool',      0, undef],
+      showAsFree           => [0, 'bool',      0, $JSON::false],
       replyTo              => [0, 'object',    0, undef],
       participants         => [0, 'object',    0, undef],
       useDefaultAlerts     => [0, 'bool',      0, $JSON::false],
       alerts               => [0, 'object',    0, undef],
+      excluded             => [0, 'bool',      0, $JSON::false],
     },
     replyTo => {
       imip                 => [0, 'mailto',    0, undef],
@@ -228,9 +229,8 @@ BEGIN {
     recurrenceOverrides
     replyTo
     participantId
+    method
   };
-  # not in tc-api / JMAP, but necessary for iMIP
-  $MustBeTopLevel{method} = 1;
 
   # Colour names defined in CSS Color Module Level 3
   # http://www.w3.org/TR/css3-color/
@@ -595,34 +595,37 @@ sub _saneuid {
 sub _makeParticipant {
   my ($Self, $Calendar, $Participants, $VAttendee, $role) = @_;
 
-  return unless $VAttendee->{value};
-  return unless $id;
-  $id =~ s/^mailto://i;
-  return if $id eq '';
-  $id = _hexkey(lc $id);
+  my $email = $VAttendee->{value};
+  return unless $email;
+  $email =~ s/^mailto://i;
+  return if $email eq '';
+  my $id = sha1_hex(lc $email);
 
   $Participants->{$id} ||= {};
 
   # XXX - if present on one but not the other, take the "best" version
   $Participants->{$id}{name} = $VAttendee->{params}{"cn"}[0] // "";
-  $Participants->{$id}{email} = $id;
+  $Participants->{$id}{email} = $VAttendee->{params}{"email"}[0] // $email;
+  $Participants->{$id}{sendTo} = { "imip" => "mailto:$email" };
   $Participants->{$id}{kind} = lc $VAttendee->{params}{"cutype"}[0]
     if $VAttendee->{params}{"cutype"};
   push @{$Participants->{$id}{roles}}, $role;
   # we don't support locationId yet
   if ($VAttendee->{params}{"partstat"}) {
-    $Participants->{$id}{scheduleStatus} = lc($VAttendee->{params}{"partstat"}[0] // "needs-action");
+    $Participants->{$id}{participationStatus} = lc($VAttendee->{params}{"partstat"}[0] // "needs-action");
   }
   if ($VAttendee->{params}{"role"}) {
     push @{$Participants->{$id}{roles}}, 'chair'
       if uc $VAttendee->{params}{"role"}[0] eq 'CHAIR';
-    $Participants->{$id}{schedulePriority} = 'optional'
+
+    $Participants->{$id}{attendance} = 'optional'
       if uc $VAttendee->{params}{"role"}[0] eq 'OPT-PARTICIPANT';
-    $Participants->{$id}{schedulePriority} = 'non-participant'
+
+    $Participants->{$id}{attendance} = 'none'
       if uc $VAttendee->{params}{"role"}[0] eq 'NON-PARTICIPANT';
   }
   if ($VAttendee->{params}{"rsvp"}) {
-    $Participants->{$id}{scheduleRSVP} = lc($VAttendee->{params}{"rsvp"}[0] // "") eq 'yes' ? $JSON::true : $JSON::false;
+    $Participants->{$id}{expectReply} = lc($VAttendee->{params}{"rsvp"}[0] // "") eq 'yes' ? $JSON::true : $JSON::false;
   }
   if (exists $VAttendee->{params}{"x-dtstamp"}) {
     my ($Date) = eval { $Self->_makeDateObj($VAttendee->{params}{"x-dtstamp"}[0], 'UTC', 'UTC') };
@@ -631,7 +634,7 @@ sub _makeParticipant {
   # memberOf is not supported
 
   if (exists $VAttendee->{params}{"x-sequence"}) {
-    $Participants->{$id}{"x-sequence"} = $VAttendee->{params}{"x-sequence"}[0] // "";
+    $Participants->{$id}{scheduleSequence} = $VAttendee->{params}{"x-sequence"}[0] // "";
   }
 }
 
@@ -1055,7 +1058,7 @@ sub _getEventsFromVCalendar {
 
         my $size = $Attach->{params}{size}[0];
 
-        $Links{_hexkey($uri)} = {
+        $Links{sha1_hex(lc $uri)} = {
           href => $uri,
           rel => 'enclosure',
           defined $filename ? (title => $filename) : (),
@@ -1066,7 +1069,7 @@ sub _getEventsFromVCalendar {
       foreach my $URL (@{$VEvent->{properties}{url} || []}) {
         my $uri = $URL->{value};
         next unless $uri;
-        $Links{_hexkey($uri)} = { href => $uri };
+        $Links{sha1_hex(lc $uri)} = { href => $uri };
       }
 
       # }}}
@@ -1216,8 +1219,9 @@ sub _getEventsFromVCalendar {
       }
 
       # 4.4.4 replyTo
-      foreach my $email (sort keys %Participants) { # later wins
-        $Event{replyTo} = { imip => "mailto:$email" } if grep { $_ eq 'owner' } @{$Participants{$email}{roles}};
+      foreach my $partid (sort keys %Participants) { # later wins
+        next unless grep { $_ eq 'owner' } @{$Participants{$partid}{roles}};
+        $Event{replyTo} = $Participants{$partid}{sendTo};
       }
 
       # 4.4.5 participants
@@ -1513,17 +1517,15 @@ sub _argsToVEvents {
   if ($Args->{recurrenceOverrides}) {
     foreach my $recurrenceId (sort keys %{$Args->{recurrenceOverrides}}) {
       my $val = $Args->{recurrenceOverrides}{$recurrenceId};
-      if ($val) {
-        if (keys %$val) {
-          my $SubEvent = $Self->_maximise($Args, $val, $recurrenceId);
-          push @VEvents, $Self->_argsToVEvents($TimeZones, $SubEvent, [$recurrenceId, $Args]);
-        }
-        else {
-          $VEvent->add_property(rdate => $Self->_makeLTime($TimeZones, $recurrenceId, $StartTimeZone, $Args->{isAllDay}));
-        }
+      if ($val->{excluded}) {
+        $VEvent->add_property(exdate => $Self->_makeLTime($TimeZones, $recurrenceId, $StartTimeZone, $Args->{isAllDay}));
+      }
+      elsif (keys %$val) {
+        my $SubEvent = $Self->_maximise($Args, $val, $recurrenceId);
+        push @VEvents, $Self->_argsToVEvents($TimeZones, $SubEvent, [$recurrenceId, $Args]);
       }
       else {
-        $VEvent->add_property(exdate => $Self->_makeLTime($TimeZones, $recurrenceId, $StartTimeZone, $Args->{isAllDay}));
+        $VEvent->add_property(rdate => $Self->_makeLTime($TimeZones, $recurrenceId, $StartTimeZone, $Args->{isAllDay}));
       }
     }
   }
