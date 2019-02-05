@@ -545,11 +545,12 @@ sub _getDateObjMulti {
 # Exclude DTSTAMP from auto uid generation
 sub _hexkey {
   my $VEvent = shift;
+  my $extra = shift || '';
   my $updated = delete $VEvent->{properties}->{updated};
   my $d = Data::Dumper->new([$VEvent]);
   $d->Indent(0);
   $d->Sortkeys(1);
-  my $Key = sha1_hex($d->Dump());
+  my $Key = sha1_hex($d->Dump() . $extra);
   $VEvent->{properties}->{updated} = $updated if defined $updated;
   return $Key;
 }
@@ -935,7 +936,7 @@ sub _getEventsFromVCalendar {
           = map { $_ => $VAlarm->{properties}{$_}[0] }
               keys %{$VAlarm->{properties}};
 
-        my $alarmuid = $AlarmProperties{uid}{value} || _hexkey($VAlarm) . '-alarmauto';
+        my $alarmuid = $AlarmProperties{uid}{value} || _hexkey($VAlarm, $uid) . '-alarmauto';
 
         my %Alert;
 
@@ -1427,7 +1428,7 @@ sub _argsToVEvents {
   $VEvent->add_properties(
     uid      => $Args->{uid},
     sequence => ($Args->{sequence} || 0),
-    transp   => ($Args->{showAsFree} ? 'TRANSPARENT' : 'OPAQUE'),
+    transp   => ($Args->{freeBusyStatus} ? 'TRANSPARENT' : 'OPAQUE'),
   );
 
   if ($recurrenceData) {
