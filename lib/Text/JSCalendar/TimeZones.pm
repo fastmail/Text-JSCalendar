@@ -13768,7 +13768,7 @@ sub GetTimeZone {
     }
   }
 
-  return '' unless exists $Args{StandardTzOffsetTo};
+  return undef unless exists $Args{StandardTzOffsetTo};
 
   # }}}
 

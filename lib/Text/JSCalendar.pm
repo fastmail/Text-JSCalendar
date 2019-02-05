@@ -1275,13 +1275,13 @@ sub _getTimeZone {
     }
   }
 
-  return undef unless exists $TzOffsets{standard};
-
   my $TimeZone = Text::JSCalendar::TimeZones->GetTimeZone(
     TZID               => $TZID,
     Time               => $Element->{value},
-    StandardTzOffsetTo => $TzOffsets{standard},
-    ($TzOffsets{daylight}
+    (exists $TzOffsets{standard}
+      ? (StandardTzOffsetTo => $TzOffsets{standard})
+      : ()),
+    (exists $TzOffsets{daylight}
       ? (DaylightTzOffsetTo => $TzOffsets{daylight})
       : ()),
   ) || undef;
