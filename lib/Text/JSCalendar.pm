@@ -1455,7 +1455,7 @@ sub _argsToVEvents {
   my $EndTimeZone;
   my $locations = $Args->{locations} || {};
   foreach my $id (sort keys %$locations) {
-    if ($locations->{$id}{rel} and $locations->{id}{rel} eq 'end') {
+    if ($locations->{$id}{rel} and $locations->{$id}{rel} eq 'end') {
       $EndTimeZone = $locations->{end}{timeZone};
     }
     if ($locations->{$id}{name}) {
