@@ -1,0 +1,7 @@
+README
+Changes
+lib/Text/JSCalendar.pm
+lib/Text/JSCalendar/TimeZones.pm
+Makefile.PL
+utils/GenerateTimeZoneModule.pl
+utils/GenerateTimeZonePopulations.pl
