@@ -1,5 +1,6 @@
 README
 Changes
+t/00-load.t
 lib/Text/JSCalendar.pm
 lib/Text/JSCalendar/TimeZones.pm
 Makefile.PL
