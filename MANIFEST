@@ -1,4 +1,5 @@
 README
+MANIFEST
 Changes
 t/00-load.t
 lib/Text/JSCalendar.pm
