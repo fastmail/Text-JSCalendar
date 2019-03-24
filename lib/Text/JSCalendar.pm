@@ -55,7 +55,8 @@ BEGIN {
   %EventKeys = (
     '' => {
       uid                  => [0, 'string',    1, undef],
-      relatedTo            => [0, 'string',    0, undef],
+      relatedTo            => [2, 'keywords',  0, undef],
+      keywords             => [0, 'keywords',  0, undef],
       prodId               => [0, 'string',    0, undef],
       created              => [0, 'utcdate',   0, undef],
       updated              => [0, 'utcdate',   1, undef],
@@ -1100,7 +1101,8 @@ sub _getEventsFromVCalendar {
       my %relations;
       foreach my $Relation (@{$VEvent->{properties}{'related-to'} || []}) {
         my $reltype = $Relation->{params}{reltype}[0] || 'parent';
-        $relations{$reltype} = $Relation->{value};
+        $reltype = lc $reltype if grep { $_ eq lc $reltype } qw(first next parent child);
+        $relations{$Relation->{value}}{relation}{$reltype} = $JSON::true;
       }
 
       # }}}
@@ -1672,6 +1674,18 @@ sub _argsToVEvents {
       # otherwise it's just a URL
       else {
         $VEvent->add_property(url => [ $Url ]);
+      }
+    }
+  }
+
+  if ($Args->{relatedTo}) {
+    foreach my $uid (keys %{$Args->{relatedTo}}) {
+      my $relation = $Args->{relatedTo}{$uid}{relation};
+      foreach my $key (keys %$relation) {
+        $key = uc($key) if grep { $_ eq $key } qw(first next parent child);
+        my %Props;
+        $Props{RELTYPE} = $key unless $key eq 'PARENT';
+        $VEvent->add_property('RELATED-TO' => [ $uid, \%Props ]);
       }
     }
   }
