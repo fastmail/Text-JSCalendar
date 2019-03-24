@@ -26,6 +26,7 @@ foreach my $name (@list) {
   my $ical = slurp($name, 'ics');
   warn $ical if $ENV{NOISY};
   my @idata = $jscal->vcalendarToEvents($ical);
+  $_ = $jscal->NormaliseEvent($_) for @idata;
   warn JSON::XS->new->pretty(1)->canonical(1)->encode(\@idata) if $ENV{NOISY};
 
   # round trip it
@@ -35,6 +36,7 @@ foreach my $name (@list) {
   # and round trip it back again
   my @back = $jscal->vcalendarToEvents($newical);
   # and it's still the same
+  $_ = $jscal->NormaliseEvent($_) for @back;
   warn JSON::XS->new->pretty(1)->canonical(1)->encode(\@back) if $ENV{NOISY};
   is_deeply(\@back, \@idata, "$name roundtrip");
 }
