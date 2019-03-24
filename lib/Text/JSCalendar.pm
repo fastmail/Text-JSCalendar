@@ -1653,8 +1653,6 @@ sub _argsToVCalendar {
       $VCalendar->add_properties('prodid' => $Args->{prodId});
       $havepid = 1;
     }
-    # initialise timestamp if not given one
-    $Args->{dtstamp} //= DateTime->now()->strftime('%Y-%m-%dT%H:%M:%S');
     push @VEvents, $Self->_argsToVEvents(\%TimeZones, $Args);
   }
 
