@@ -1823,6 +1823,11 @@ sub _makeRecurrence {
     }
   }
 
+  if ($Args->{rscale}) {
+    $Recurrence{RSCALE} = uc $Args->{rscale};
+    $Recurrence{SKIP} = uc $Args->{skip} if exists $Args->{skip};
+  }
+
   # }}}
 
   # validate generic recurrence properties {{{
