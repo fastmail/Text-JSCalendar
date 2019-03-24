@@ -62,7 +62,7 @@ BEGIN {
       sequence             => [0, 'number',    0, 0],
       title                => [0, 'string',    0, ''],
       description          => [0, 'string',    0, ''],
-      links                => [0, 'object',    0, undef],
+      links                => [2, 'object',    0, undef],
       locale               => [0, 'string',    0, undef],
       localizations        => [0, 'patch',     0, undef],
       locations            => [2, 'object',    0, undef],
@@ -71,7 +71,7 @@ BEGIN {
       timeZone             => [0, 'timezone',  0, undef],
       duration             => [0, 'duration',  0, undef],
       recurrenceRule       => [0, 'object',    0, undef],
-      recurrenceOverrides  => [0, 'patch',     0, undef],
+      recurrenceOverrides  => [2, 'patch',     0, undef],
       status               => [0, 'string',    0, undef],
       showAsFree           => [0, 'bool',      0, $JSON::false],
       replyTo              => [0, 'object',    0, undef],
@@ -664,7 +664,11 @@ sub NormaliseEvent {
           next unless ref($Item->{$id}) eq 'HASH';
           $new{$id} = $class->NormaliseEvent($Item->{$id}, $key);
         }
-        # XXX - patch handling
+        elsif ($Spec->{$key}[1] eq 'patch') {
+          next unless ref($Item->{$id}) eq 'HASH';
+          # XXX - handle keys?  Tricky
+          $new{$id} = $class->NormaliseEvent($Item->{$id}, $key);
+        }
         else {
           $new{$id} = $Item->{$id};
         }
@@ -681,7 +685,11 @@ sub NormaliseEvent {
           next unless ref($one) eq 'HASH';
           push @new, $class->NormaliseEvent($one, $key);
         }
-        # XXX - patch handling
+        elsif ($Spec->{$key}[1] eq 'patch') {
+          next unless ref($one) eq 'HASH';
+          # XXX - handle keys?  Tricky
+          push @new, $class->NormaliseEvent($one, $key);
+        }
         else {
           push @new, $one;
         }
