@@ -1702,6 +1702,24 @@ sub _argsToVEvents {
   return @VEvents;
 }
 
+=head2 $self->eventsToVCalendar(@Events)
+
+Convert a set of events (one or multiple) into an ical file)
+
+Returns a string
+
+e.g.
+
+print $jscal->eventsToVCalendar(@Events);
+
+=cut
+
+sub eventsToVCalendar {
+  my $Self = shift;
+  my $VCalendar = $Self->_argsToVCalendar(\@_);
+  return $VCalendar->as_string();
+}
+
 sub _argsToVCalendar {
   my $Self = shift;
   my $Item = shift;
