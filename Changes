@@ -1,5 +1,9 @@
 Revision history for Perl extension Test::JSCalendar
 
+0.02  2019-03-24
+	- add tests
+	- fix up participation status
+
 0.01  2019-02-09
 	- original release
 
