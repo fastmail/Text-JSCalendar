@@ -30,8 +30,7 @@ foreach my $name (@list) {
   warn JSON::XS->new->pretty(1)->canonical(1)->encode(\@idata) if $ENV{NOISY};
 
   # round trip it
-  my $new = $jscal->_argsToVCalendar(\@idata);
-  my $newical = $new->as_string();
+  my $newical = $jscal->eventsToVCalendar(@idata);
   warn $newical if $ENV{NOISY};
   # and round trip it back again
   my @back = $jscal->vcalendarToEvents($newical);
