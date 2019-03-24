@@ -1061,7 +1061,7 @@ sub _getEventsFromVCalendar {
         my $filename = $Attach->{params}{filename}[0];
         # XXX - mime guessing?
         my $mime = $Attach->{params}{fmttype}[0];
-        if (not defined $mime) {
+        if (not defined $mime and $filename) {
           $::MimeTypes ||= MIME::Types->new;
           my $MimeTypeObj = $::MimeTypes->mimeTypeOf($filename);
           $mime = $MimeTypeObj->type() if $MimeTypeObj;
@@ -1585,6 +1585,7 @@ sub _argsToVEvents {
         $VAlarm = Data::ICal::Entry::Alarm::Email->new();
         $VAlarm->add_properties(
           summary     => $Summary,
+          attendee    => 'mailto:',  # XXX - name?
           description => join("\n",
             $Description,
             "",
