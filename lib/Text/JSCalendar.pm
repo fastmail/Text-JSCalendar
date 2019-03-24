@@ -1690,6 +1690,11 @@ sub _argsToVEvents {
     }
   }
 
+  if ($Args->{keywords}) {
+    my @items = sort keys %{$Args->{keywords}};
+    $VEvent->add_property('CATEGORIES', join(',', @items));
+  }
+
   # detect if this is a dummy top-level event and skip it
   unshift @VEvents, $VEvent unless ($Args->{replyTo} and not $Args->{participants});
 
