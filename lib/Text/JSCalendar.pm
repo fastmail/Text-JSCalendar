@@ -75,7 +75,7 @@ BEGIN {
       status               => [0, 'string',    0, undef],
       showAsFree           => [0, 'bool',      0, $JSON::false],
       replyTo              => [0, 'object',    0, undef],
-      participants         => [0, 'object',    0, undef],
+      participants         => [2, 'object',    0, undef],
       useDefaultAlerts     => [0, 'bool',      0, $JSON::false],
       alerts               => [2, 'object',    0, undef],
       excluded             => [0, 'bool',      0, $JSON::false],
@@ -1478,6 +1478,10 @@ sub _argsToVEvents {
     $VEvent->add_property($key => [$Prop, \%lang]);
   }
 
+  if ($Args->{status} and $Args->{status} ne 'confirmed') {
+    $VEvent->add_property('status', uc($Args->{status}));
+  }
+
   # dates in UTC - stored in UTC
   $VEvent->add_property(created => $Self->_makeZTime($Args->{created})) if $Args->{created};
   $VEvent->add_property(dtstamp => $Self->_makeZTime($Args->{updated} || DateTime->now->iso8601()));
@@ -1619,13 +1623,13 @@ sub _argsToVEvents {
         delete $AttendeeProps{$prop} if $AttendeeProps{$prop} eq '';
       }
       if (grep { $_ eq 'chair' } @{$Attendee->{roles}}) {
-        $Attendee->{ROLE} = 'CHAIR';
+        $AttendeeProps{ROLE} = 'CHAIR';
       }
       elsif ($Attendee->{attendance} and $Attendee->{attendance} eq 'optional') {
-        $Attendee->{ROLE} = 'OPT-PARTICIPANT';
+        $AttendeeProps{ROLE} = 'OPT-PARTICIPANT';
       }
       elsif ($Attendee->{attendance} and $Attendee->{attendance} eq 'none') {
-        $Attendee->{ROLE} = 'NON-PARTICIPANT';
+        $AttendeeProps{ROLE} = 'NON-PARTICIPANT';
       }
       # default is REQ-PARTICIPANT
 
