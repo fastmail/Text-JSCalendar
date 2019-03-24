@@ -1501,6 +1501,7 @@ sub _argsToVEvents {
     $EndTimeZone //= $StartTimeZone;
     my $Duration = eval { DateTime::Format::ICal->parse_duration($Args->{duration}) };
     my $End = $Start->clone()->add($Duration) if $Duration;
+    $End->set_time_zone($EndTimeZone);
     $VEvent->add_property(dtend => $Self->_makeVTimeObj($TimeZones, $End, $EndTimeZone, $Args->{isAllDay}));
   }
 
