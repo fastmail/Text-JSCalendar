@@ -38,21 +38,11 @@ our $UTC = DateTime::TimeZone::UTC->new();
 our $FLOATING = DateTime::TimeZone::Floating->new();
 our $LOCALE = DateTime::Locale->load('en_US');
 
-# Beginning and End of time as used for "all event" date ranges
-# Reducing this range may result in events disappearing from FastMail
-# calendars, as we think they have been deleted from the other end,
-# so best to avoid this.
-# However, from my tests, the events should be resurrected once this date
-# window includes them again.
-
-my $BoT = '1970-01-01T00:00:00';
-my $EoT = '2038-01-19T00:00:00';
-
 my (
   %ValidDay,
   %ValidFrequency,
   %EventKeys,
-  %ColourNames,
+  %ColorNames,
   %RecurrenceProperties,
   %UTCLinks,
   %MustBeTopLevel,
@@ -202,10 +192,10 @@ BEGIN {
     method
   };
 
-  # Colour names defined in CSS Color Module Level 3
+  # Color names defined in CSS Color Module Level 3
   # http://www.w3.org/TR/css3-color/
 
-  %ColourNames
+  %ColorNames
     = map { $_ => 1 }
       qw{
         aliceblue
@@ -380,11 +370,11 @@ Text::JSCalendar
 
 =head1 VERSION
 
-Version 0.01
+Version 0.02
 
 =cut
 
-our $VERSION = '0.01';
+our $VERSION = '0.02';
 
 =head1 SYNOPSIS
 
@@ -423,10 +413,16 @@ sub tz {
   return $Self->{_tz}{$tzName};
 }
 
-sub _fixColour {
+sub color {
+  my $Self = shift;
+  my $color = shift;
+  return _fixColor($color);
+}
+
+sub _fixColor {
   my $color = lc(shift || '');
 
-  return $color if $ColourNames{$color};
+  return $color if $ColorNames{$color};
   confess("unparseable color: $color") unless $color =~ m/^\s*(\#[a-f0-9]{3,8})\s*$/;
   $color = $1;
   return uc($color) if length($color) == 7;
@@ -1150,7 +1146,7 @@ sub _getEventsFromVCalendar {
       # 4.2.9 categories is not supported
 
       # 4.2.10 color
-      $Event{color} = _fixColour($Properties{color}{value}) if $Properties{color};
+      $Event{color} = _fixColor($Properties{color}{value}) if $Properties{color};
 
       # ==============================================================
       # 4.3 Recurrence properties
