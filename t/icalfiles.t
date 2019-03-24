@@ -12,7 +12,9 @@ opendir(DH, $testdir);
 my @list;
 while (my $item = readdir(DH)) {
   next unless $item =~ m/(.*).ics/;
-  push @list, $1;
+  my $name = $1;
+  next if ($ENV{TESTNAME} and $name ne $ENV{TESTNAME});
+  push @list, $name;
 }
 closedir(DH);
 
@@ -22,6 +24,7 @@ my $jscal = Text::JSCalendar->new();
 
 foreach my $name (@list) {
   my $ical = slurp($name, 'ics');
+  warn $ical if $ENV{NOISY};
   my @idata = $jscal->vcalendarToEvents($ical);
   warn JSON::XS->new->pretty(1)->canonical(1)->encode(\@idata) if $ENV{NOISY};
 
@@ -32,6 +35,7 @@ foreach my $name (@list) {
   # and round trip it back again
   my @back = $jscal->vcalendarToEvents($newical);
   # and it's still the same
+  warn JSON::XS->new->pretty(1)->canonical(1)->encode(\@back) if $ENV{NOISY};
   is_deeply(\@back, \@idata, "$name roundtrip");
 }
 
