@@ -129,11 +129,12 @@ BEGIN {
       kind                 => [0, 'string',    0, 'unknown'],
       roles                => [1, 'string',    1, undef],
       locationId           => [0, 'string',    0, undef],
-      scheduleStatus       => [0, 'string',    0, 'needs-action'],
-      schedulePriority     => [0, 'string',    0, 'required'],
-      scheduleRSVP         => [0, 'bool',      0, $JSON::false],
+      participationStatus  => [0, 'string',    0, 'needs-action'],
+      attendance           => [0, 'string',    0, 'required'],
+      expectReply          => [0, 'bool',      0, $JSON::false],
+      scheduleSequence     => [0, 'number',    0, 0],
       scheduleUpdated      => [0, 'utcdate',   0, undef],
-      memberOf             => [1, 'string',    0, undef],
+      # XXX - there's a bunch more here
     },
     alerts => {
       relativeTo           => [0, 'string',    0, 'before-start'],
@@ -1561,9 +1562,9 @@ sub _argsToVEvents {
 
   my %namemap;
   if ($Args->{participants}) {
-    foreach my $Address (sort keys %{$Args->{participants}}) {
-      my $Attendee = $Args->{participants}{$Address};
-      my $Email = $Attendee->{email} || $Address;
+    foreach my $partid (sort keys %{$Args->{participants}}) {
+      my $Attendee = $Args->{participants}{$partid};
+      my $Email = $Attendee->{email};
       my $Rsvp  = $Attendee->{rsvp};
 
       my %AttendeeProps;
@@ -1575,8 +1576,8 @@ sub _argsToVEvents {
       next unless grep { $_ eq 'attendee' } @{$Attendee->{roles}};
 
       $AttendeeProps{"CUTYPE"}     = uc $Attendee->{"kind"} if defined $Attendee->{"kind"};
-      $AttendeeProps{"RSVP"}       = uc $Attendee->{"scheduleRSVP"} if defined $Attendee->{"scheduleRSVP"};
-      $AttendeeProps{"X-SEQUENCE"} = $Attendee->{"x-sequence"} if defined $Attendee->{"x-sequence"};
+      $AttendeeProps{"RSVP"}       = "TRUE" if $Attendee->{"expectReply"};
+      $AttendeeProps{"X-SEQUENCE"} = $Attendee->{"scheduleSequence"} if defined $Attendee->{"scheduleSequence"};
       $AttendeeProps{"X-DTSTAMP"}  = $Self->_makeZTime($Attendee->{"scheduleUpdated"}) if defined $Attendee->{"scheduleUpdated"};
       foreach my $prop (keys %AttendeeProps) {
         delete $AttendeeProps{$prop} if $AttendeeProps{$prop} eq '';
@@ -1584,15 +1585,15 @@ sub _argsToVEvents {
       if (grep { $_ eq 'chair' } @{$Attendee->{roles}}) {
         $Attendee->{ROLE} = 'CHAIR';
       }
-      elsif ($Attendee->{schedulePriority} and $Attendee->{schedulePriority} eq 'optional') {
+      elsif ($Attendee->{attendance} and $Attendee->{attendance} eq 'optional') {
         $Attendee->{ROLE} = 'OPT-PARTICIPANT';
       }
-      elsif ($Attendee->{schedulePriority} and $Attendee->{schedulePriority} eq 'non-participant') {
+      elsif ($Attendee->{attendance} and $Attendee->{attendance} eq 'none') {
         $Attendee->{ROLE} = 'NON-PARTICIPANT';
       }
       # default is REQ-PARTICIPANT
 
-      $AttendeeProps{PARTSTAT} = uc $Attendee->{"scheduleStatus"} if $Attendee->{"scheduleStatus"};
+      $AttendeeProps{PARTSTAT} = uc $Attendee->{"participationStatus"} if $Attendee->{"participationStatus"};
 
       $VEvent->add_property(attendee => [ "MAILTO:$Email", \%AttendeeProps ]);
     }
