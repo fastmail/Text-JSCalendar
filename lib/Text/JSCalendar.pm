@@ -65,7 +65,7 @@ BEGIN {
       links                => [0, 'object',    0, undef],
       locale               => [0, 'string',    0, undef],
       localizations        => [0, 'patch',     0, undef],
-      locations            => [0, 'object',    0, undef],
+      locations            => [2, 'object',    0, undef],
       isAllDay             => [0, 'bool',      0, $JSON::false],
       start                => [0, 'localdate', 1, undef],
       timeZone             => [0, 'timezone',  0, undef],
@@ -653,24 +653,58 @@ sub NormaliseEvent {
   }
   foreach my $key (sort keys %$Spec) {
     # remove if it's the default
-    if ($Spec->{$key}[1] eq 'object') {
+    if ($Spec->{$key}[0] == 2) {
+      # idmap of type
       my $Item = delete $Copy{$key};
-      next unless $Item; # no object
-      if ($Spec->{$key}[0]) {
-        $Copy{$key} = [map { $class->NormaliseEvent($_, $key) } @$Item];
+      next unless ref($Item) eq 'HASH';
+      next unless keys %$Item;
+      my %new;
+      foreach my $id (keys %$Item) {
+        if ($Spec->{$key}[1] eq 'object') {
+          next unless ref($Item->{$id}) eq 'HASH';
+          $new{$id} = $class->NormaliseEvent($Item->{$id}, $key);
+        }
+        # XXX - patch handling
+        else {
+          $new{$id} = $Item->{$id};
+        }
       }
-      else {
-        $Copy{$key} = $class->NormaliseEvent($Item, $key);
+      $Copy{$key} = \%new;
+    }
+    elsif ($Spec->{$key}[0] == 1) {
+      my $Item = delete $Copy{$key};
+      next unless ref($Item) eq 'ARRAY';
+      next unless @$Item;
+      my @new;
+      foreach my $one (@$Item) {
+        if ($Spec->{$key}[1] eq 'object') {
+          next unless ref($one) eq 'HASH';
+          push @new, $class->NormaliseEvent($one, $key);
+        }
+        # XXX - patch handling
+        else {
+          push @new, $one;
+        }
       }
-    }
-    elsif ($Spec->{$key}[1] eq 'bool') {
-      delete $Copy{$key} if !!$Spec->{$key}[3] == !!$Copy{$key};
-    }
-    elsif ($Spec->{$key}[1] eq 'mailto') {
-      $Copy{$key} = lc $Copy{$key} if $Copy{$key};
+      $Copy{$key} = \@new;
     }
     else {
-      delete $Copy{$key} if _safeeq($Spec->{$key}[3], $Copy{$key});
+      if ($Spec->{$key}[1] eq 'object') {
+        next unless ref($Copy{$key}) eq 'HASH';
+        $Copy{$key} = $class->NormaliseEvent($Copy{$key}, $key);
+      }
+      elsif ($Spec->{$key}[1] eq 'bool') {
+        next if ref($Copy{$key});
+        delete $Copy{$key} if !!$Spec->{$key}[3] == !!$Copy{$key};
+      }
+      elsif ($Spec->{$key}[1] eq 'mailto') {
+        next if ref($Copy{$key});
+        $Copy{$key} = lc $Copy{$key} if $Copy{$key};
+      }
+      else {
+        next if ref($Copy{$key});
+        delete $Copy{$key} if _safeeq($Spec->{$key}[3], $Copy{$key});
+      }
     }
   }
 
