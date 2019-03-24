@@ -77,7 +77,7 @@ BEGIN {
       replyTo              => [0, 'object',    0, undef],
       participants         => [0, 'object',    0, undef],
       useDefaultAlerts     => [0, 'bool',      0, $JSON::false],
-      alerts               => [0, 'object',    0, undef],
+      alerts               => [2, 'object',    0, undef],
       excluded             => [0, 'bool',      0, $JSON::false],
     },
     replyTo => {
@@ -1501,7 +1501,7 @@ sub _argsToVEvents {
     $EndTimeZone //= $StartTimeZone;
     my $Duration = eval { DateTime::Format::ICal->parse_duration($Args->{duration}) };
     my $End = $Start->clone()->add($Duration) if $Duration;
-    $End->set_time_zone($EndTimeZone);
+    $End->set_time_zone($EndTimeZone) if $EndTimeZone;
     $VEvent->add_property(dtend => $Self->_makeVTimeObj($TimeZones, $End, $EndTimeZone, $Args->{isAllDay}));
   }
 
@@ -1539,9 +1539,10 @@ sub _argsToVEvents {
 
       my $Type          = $Alert->{action} // '';
       my $Offset        = $Alert->{offset};
-      my $Sign          = $Alert->{relativeTo} =~ m/before/ ? '-' : '';
-      my $Loc1          = $Alert->{relativeTo} =~ m/end/ ? "ends" : "starts";
-      my $Loc2          = $Alert->{relativeTo} =~ m/end/ ? "ended" : "started";
+      my $Relative      = $Alert->{relativeTo} // 'before-start';
+      my $Sign          = $Relative =~ m/before/ ? '-' : '';
+      my $Loc1          = $Relative =~ m/end/ ? "ends" : "starts";
+      my $Loc2          = $Relative =~ m/end/ ? "ended" : "started";
       my $Minutes       = DateTime::Format::ICal->parse_duration(uc $Offset)->in_units('minutes');
 
       my $VAlarm;
@@ -1573,7 +1574,7 @@ sub _argsToVEvents {
             $Description,
             "",
             "Description:",
-            $Args->{description},
+            ($Args->{description} // ''),
             # XXX more
           ),
         );
@@ -1585,7 +1586,7 @@ sub _argsToVEvents {
 
       $VAlarm->add_property(uid => $id);
       $VAlarm->add_property(trigger => "${Sign}$Offset");
-      $VAlarm->add_property(related => 'end') if $Alert->{relativeTo} =~ m/end/;
+      $VAlarm->add_property(related => 'end') if $Relative =~ m/end/;
 
       if ($Alert->{acknowledged}) {
         $VAlarm->add_property(acknowledged => $Self->_makeZTime($Alert->{acknowledged}));
