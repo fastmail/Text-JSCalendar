@@ -1144,7 +1144,8 @@ sub _getEventsFromVCalendar {
       # 4.2 What and where
 
       # 4.2.1 title
-      $Event{title} = $Properties{summary}{value} if $Properties{summary};
+      $Event{title} = $Properties{summary}{value}
+        if ($Properties{summary} and defined $Properties{summary}{value});
 
       # 4.2.2 description
       $Event{description} = join("\n", @description) if @description;
