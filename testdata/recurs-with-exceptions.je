@@ -1,6 +1,6 @@
 [
    {
-      "@type" : "jsevent",
+      "@type" : "Event",
       "duration" : "PT1H",
       "isAllDay" : false,
       "prodId" : "test",
@@ -21,6 +21,7 @@
          "interval" : 2
       },
       "sequence" : 0,
+      "showWithoutTime" : false,
       "start" : "2016-09-22T09:00:00",
       "timeZone" : "Europe/Berlin",
       "title" : "A recurrence with overrides",

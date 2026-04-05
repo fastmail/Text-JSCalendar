@@ -1,6 +1,6 @@
 [
    {
-      "@type" : "jsevent",
+      "@type" : "Event",
       "duration" : "PT1H",
       "isAllDay" : false,
       "locations" : {
@@ -10,6 +10,7 @@
       },
       "prodId" : "test",
       "sequence" : 1,
+      "showWithoutTime" : false,
       "start" : "2016-09-16T10:00:00",
       "timeZone" : "Europe/Berlin",
       "title" : "Simple Event",
@@ -17,4 +18,3 @@
       "updated" : "2016-09-13T12:16:00Z"
    }
 ]
-

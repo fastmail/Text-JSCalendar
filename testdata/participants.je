@@ -1,6 +1,6 @@
 [
    {
-      "@type" : "jsevent",
+      "@type" : "Event",
       "created" : "2016-07-25T07:43:01Z",
       "duration" : "PT1H30M",
       "isAllDay" : false,
@@ -9,6 +9,7 @@
             "name" : "42 High Street\nTrentham"
          }
       },
+      "organizerCalendarAddress" : "mailto:neil@example.com",
       "participants" : {
          "d54ced80cb1318978b39d1ad9a00d22d094ee5dc" : {
             "email" : "diana@example.com",
@@ -43,6 +44,7 @@
          "imip" : "mailto:neil@example.com"
       },
       "sequence" : 2,
+      "showWithoutTime" : false,
       "start" : "2016-06-25T12:30:00",
       "timeZone" : "Australia/Melbourne",
       "title" : "Lunch at du Fermier",
@@ -50,4 +52,3 @@
       "updated" : "2016-05-07T07:33:09Z"
    }
 ]
-
