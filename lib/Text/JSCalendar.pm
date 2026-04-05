@@ -1037,6 +1037,7 @@ sub _getEventsFromVCalendar {
       # parse alarms {{{
 
       my %Alerts;
+      my $hasDefaultAlarm = 0;
       foreach my $VAlarm (@{$VEvent->{objects} || []}) {
         next unless lc $VAlarm->{type} eq 'valarm';
 
@@ -1044,7 +1045,14 @@ sub _getEventsFromVCalendar {
           = map { $_ => $VAlarm->{properties}{$_}[0] }
               keys %{$VAlarm->{properties}};
 
-        my $alarmuid = $AlarmProperties{uid}{value} || _hexkey($VAlarm, $uid) . '-alarmauto';
+        # X-APPLE-DEFAULT-ALARM:TRUE -> useDefaultAlerts
+        if (lc($AlarmProperties{'x-apple-default-alarm'}{value} // '') eq 'true') {
+          $hasDefaultAlarm = 1;
+        }
+
+        my $alarmuid = $AlarmProperties{uid}{value}
+                    || $AlarmProperties{'x-wr-alarmuid'}{value}
+                    || _hexkey($VAlarm, $uid) . '-alarmauto';
 
         my %Alert;
 
@@ -1281,13 +1289,33 @@ sub _getEventsFromVCalendar {
       if ($Properties{location}{value}) {
         $Event{locations}{location} = { name => $Properties{location}{value} };
       }
-      # GEO -> separate location with coordinates
-      if ($Properties{geo}{value}) {
+      # X-APPLE-STRUCTURED-LOCATION -> location with coordinates, name, description
+      # Check for Apple structured locations first; if present, skip plain GEO
+      my $has_apple_location = scalar @{$VEvent->{properties}{'x-apple-structured-location'} || []};
+
+      # GEO -> separate location with coordinates (only if no Apple structured location)
+      if (!$has_apple_location && $Properties{geo}{value}) {
         my ($lat, $lon) = split /;/, $Properties{geo}{value};
         if (defined $lat && defined $lon) {
           my $coords = "geo:$lat,$lon";
           my $locid = $Event{locations} ? 'geo' : 'location';
           $Event{locations}{$locid} = { coordinates => $coords };
+        }
+      }
+
+      for my $ASL (@{$VEvent->{properties}{'x-apple-structured-location'} || []}) {
+        next unless $ASL->{value};
+        my %loc;
+        if ($ASL->{value} =~ m{^geo:([-\d.]+),([-\d.]+)}) {
+          $loc{coordinates} = $ASL->{value};
+        }
+        my $title = $ASL->{params}{'x-title'}[0];
+        $loc{name} = $title if defined $title && $title ne '';
+        my $address = $ASL->{params}{'x-address'}[0];
+        $loc{description} = $address if defined $address && $address ne '';
+        if (%loc) {
+          my $locid = sha1_hex($ASL->{value} || 'apple-location');
+          $Event{locations}{$locid} = \%loc;
         }
       }
 
@@ -1378,6 +1406,7 @@ sub _getEventsFromVCalendar {
 
       # 4.5.2 alerts
       $Event{alerts} = \%Alerts if %Alerts;
+      $Event{useDefaultAlerts} = $JSON::true if $hasDefaultAlarm;
 
       # ==============================================================
       # 4.6 Multilingual properties
@@ -1699,12 +1728,26 @@ sub _argsToVEvents {
     if (!$EndTimeZone && $locations->{$id}{rel} && $locations->{$id}{rel} eq 'end') {
       $EndTimeZone = $locations->{$id}{timeZone};
     }
-    if ($locations->{$id}{name}) {
+    if ($locations->{$id}{name} && !$locations->{$id}{coordinates}) {
+      # Only emit LOCATION if this entry doesn't also have coordinates
+      # (coordinates with name go into X-APPLE-STRUCTURED-LOCATION with X-TITLE)
       $VEvent->add_property(location => $locations->{$id}{name});
     }
     # GEO from coordinates
     if ($locations->{$id}{coordinates} && $locations->{$id}{coordinates} =~ m{^geo:([-\d.]+),([-\d.]+)}) {
-      $VEvent->add_property('geo' => "$1;$2");
+      my ($lat, $lon) = ($1, $2);
+      my $has_apple_meta = $locations->{$id}{name} || $locations->{$id}{description};
+      if ($has_apple_meta) {
+        # Emit X-APPLE-STRUCTURED-LOCATION (which implies GEO)
+        my %asl_params = (VALUE => 'URI');
+        $asl_params{'X-TITLE'} = $locations->{$id}{name} if $locations->{$id}{name};
+        $asl_params{'X-ADDRESS'} = $locations->{$id}{description} if $locations->{$id}{description};
+        $VEvent->add_property('x-apple-structured-location' => [$locations->{$id}{coordinates}, \%asl_params]);
+      }
+      else {
+        # Plain GEO without Apple metadata
+        $VEvent->add_property('geo' => "$lat;$lon");
+      }
     }
   }
 
