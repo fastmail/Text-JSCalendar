@@ -3,52 +3,46 @@
       "@type" : "Event",
       "created" : "2016-07-25T07:43:01Z",
       "duration" : "PT1H30M",
-      "isAllDay" : false,
       "locations" : {
          "location" : {
+            "@type" : "Location",
             "name" : "42 High Street\nTrentham"
          }
       },
       "organizerCalendarAddress" : "mailto:neil@example.com",
       "participants" : {
          "d54ced80cb1318978b39d1ad9a00d22d094ee5dc" : {
+            "calendarAddress" : "mailto:diana@example.com",
             "email" : "diana@example.com",
             "kind" : "individual",
             "name" : "Diana H",
             "participationStatus" : "accepted",
-            "roles" : [
-               "attendee"
-            ],
-            "scheduleUpdated" : "2016-05-07T07:33:08Z",
-            "sendTo" : {
-               "imip" : "mailto:diana@example.com"
-            }
+            "roles" : {
+               "attendee" : true
+            },
+            "scheduleUpdated" : "2016-05-07T07:33:08Z"
          },
          "e22314723a059ac5029b4440396ae1c0a585dfd9" : {
+            "calendarAddress" : "mailto:neil@example.com",
             "email" : "neil@example.com",
             "kind" : "individual",
             "name" : "Neil J",
             "participationStatus" : "accepted",
-            "roles" : [
-               "owner",
-               "attendee"
-            ],
-            "scheduleUpdated" : "2016-05-07T07:08:08Z",
-            "sendTo" : {
-               "imip" : "mailto:neil@example.com"
-            }
+            "roles" : {
+               "attendee" : true,
+               "owner" : true
+            },
+            "scheduleUpdated" : "2016-05-07T07:08:08Z"
          }
       },
       "prodId" : "test",
-      "replyTo" : {
-         "imip" : "mailto:neil@example.com"
-      },
       "sequence" : 2,
       "showWithoutTime" : false,
       "start" : "2016-06-25T12:30:00",
       "timeZone" : "Australia/Melbourne",
       "title" : "Lunch at du Fermier",
       "uid" : "0053564f-9b21-4d0e-a3cd-185dfb9f88fe",
-      "updated" : "2016-05-07T07:33:09Z"
+      "updated" : "2016-05-07T07:33:09Z",
+      "version" : "2.0"
    }
 ]

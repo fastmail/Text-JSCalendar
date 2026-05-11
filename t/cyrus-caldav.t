@@ -156,7 +156,7 @@ ok($get_resp->is_success, "GET endtz event");
 ok(!$@, "Parse endtz event") or diag $@;
 $event = $events[0];
 is($event->{timeZone}, 'America/New_York', "start timezone");
-is($event->{endTimeZone}, 'America/Los_Angeles', "end timezone");
+ok(!exists $event->{endTimeZone}, "endTimeZone not present (RFC 8984 removed this field)");
 
 caldav_delete($etz_uid);
 

@@ -2,11 +2,12 @@
    {
       "@type" : "Event",
       "duration" : "PT1H",
-      "isAllDay" : false,
       "prodId" : "test",
       "recurrenceRule" : {
+         "@type" : "RecurrenceRule",
          "byDay" : [
             {
+               "@type" : "NDay",
                "day" : "su",
                "nthOfPeriod" : 3
             }
@@ -19,6 +20,7 @@
       "timeZone" : "Europe/Berlin",
       "title" : "Recurs 3rd Sunday every month",
       "uid" : "5d0d7158-5ac7-48fa-8549-60bfa47335d8",
-      "updated" : "2016-09-13T12:16:00Z"
+      "updated" : "2016-09-13T12:16:00Z",
+      "version" : "2.0"
    }
 ]

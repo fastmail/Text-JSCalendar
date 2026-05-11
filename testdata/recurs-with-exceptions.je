@@ -2,7 +2,6 @@
    {
       "@type" : "Event",
       "duration" : "PT1H",
-      "isAllDay" : false,
       "prodId" : "test",
       "recurrenceOverrides" : {
          "2016-09-24T09:00:00" : {
@@ -16,6 +15,7 @@
          }
       },
       "recurrenceRule" : {
+         "@type" : "RecurrenceRule",
          "count" : 5,
          "frequency" : "daily",
          "interval" : 2
@@ -26,6 +26,7 @@
       "timeZone" : "Europe/Berlin",
       "title" : "A recurrence with overrides",
       "uid" : "9f8e4101-a720-4235-936b-5bfcbf3cf343",
-      "updated" : "2016-09-13T12:16:00Z"
+      "updated" : "2016-09-13T12:16:00Z",
+      "version" : "2.0"
    }
 ]
