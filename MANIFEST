@@ -1,6 +1,7 @@
 Changes
 lib/Text/JSCalendar.pm
 lib/Text/JSCalendar/TimeZones.pm
+LICENSE
 Makefile.PL
 MANIFEST			This list of files
 README

@@ -1,5 +1,12 @@
 Revision history for Perl extension Text::JSCalendar
 
+0.06  2026-08-31
+	- clarify licensing: same terms as Perl itself (Artistic License 1.0
+	  or GPL version 1 or later)
+	- include a LICENSE file in the distribution
+	- POD and README previously claimed Artistic License 2.0, which
+	  contradicted the Perl_5 metadata; the POD/README were wrong
+
 0.05  2026-05-11
 	- jscalendarbis-15 (draft-ietf-calext-jscalendarbis-15) compliance:
 	- recurrenceRule is now a singular object (not the RFC 8984 plural array)
