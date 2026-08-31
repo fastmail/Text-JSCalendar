@@ -398,7 +398,7 @@ BEGIN {
 
 =head1 NAME
 
-Text::JSCalendar
+Text::JSCalendar - convert between iCalendar and JSCalendar
 
 =head1 VERSION
 
