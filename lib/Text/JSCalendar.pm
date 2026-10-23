@@ -2054,7 +2054,47 @@ sub _argsToVCalendar {
     $VCalendar->add_entry($VEvent);
   }
 
+  _sanitizeEntry($VCalendar);
+
   return $VCalendar;
+}
+
+# Data::ICal escapes newlines in values, but not a lone CR, and puts
+# parameter values out verbatim, so a CR or LF from the event data
+# would start a new content line.  RFC 5545 allows no control characters
+# other than HTAB in either, so strip them before serialising.
+sub _sanitizeEntry {
+  my $Entry = shift;
+
+  foreach my $Props (values %{$Entry->properties}) {
+    foreach my $Prop (@$Props) {
+      my $value = $Prop->value;
+      if (defined $value and not ref $value) {
+        $value =~ s/\r\n?/\n/g;
+        $value =~ s/[\x00-\x08\x0b-\x1f\x7f]//g;
+        $Prop->value($value);
+      }
+
+      my %params;
+      while (my ($name, $val) = each %{$Prop->parameters}) {
+        $params{$name} = ref $val eq 'ARRAY'
+          ? [ map { _sanitizeParam($_) } @$val ]
+          : _sanitizeParam($val);
+      }
+      $Prop->parameters(\%params);
+    }
+  }
+
+  _sanitizeEntry($_) for @{$Entry->entries};
+}
+
+sub _sanitizeParam {
+  my $val = shift;
+  return $val unless defined $val;
+  $val =~ s/[\r\n]+/ /g;
+  # DQUOTE can't be escaped either; Data::ICal drops it with a warning
+  $val =~ s/[\x00-\x08\x0a-\x1f\x7f"]//g;
+  return $val;
 }
 
 sub _makeRecurrence {
