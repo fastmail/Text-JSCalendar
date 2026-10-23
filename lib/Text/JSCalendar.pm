@@ -216,7 +216,6 @@ BEGIN {
   %MustBeTopLevel = map { $_ => 1 } qw{
     @type
     uid
-    relatedTo
     prodId
     showWithoutTime
     recurrenceRule

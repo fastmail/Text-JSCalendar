@@ -6,7 +6,7 @@ use Test::More;
 use Text::JSCalendar;
 use JSON::PP ();
 
-plan tests => 13;
+plan tests => 16;
 
 my $jscal = Text::JSCalendar->new();
 
@@ -86,3 +86,20 @@ my @alice = $ical3 =~ m/^(ATTENDEE.*alice\@example\.com)/mg;
 is(scalar(@alice), 2, 'attendee kept in both instances');
 unlike($ical3, qr/mallory/, 'override cannot change participant calendarAddress');
 like($ical3, qr/^SUMMARY:Planning \(moved\)\r?$/m, 'other patches still applied');
+
+# RELATED-TO is allowed on exceptions (jscalendarbis-21), so keep it
+my $relics = join("\r\n",
+  'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:test',
+  'BEGIN:VEVENT', 'UID:rel@example.com', 'DTSTAMP:20250101T000000Z',
+  'DTSTART:20250601T100000Z', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:x',
+  'END:VEVENT',
+  'BEGIN:VEVENT', 'UID:rel@example.com', 'DTSTAMP:20250101T000000Z',
+  'RECURRENCE-ID:20250602T100000Z', 'DTSTART:20250602T100000Z', 'SUMMARY:x',
+  'RELATED-TO:parent@example.com',
+  'END:VEVENT', 'END:VCALENDAR', '');
+my ($rel) = $jscal->vcalendarToEvents($relics);
+ok(!$rel->{relatedTo}, 'master has no relatedTo');
+ok($rel->{recurrenceOverrides}{'2025-06-02T10:00:00'}{relatedTo}{'parent@example.com'},
+   'exception relatedTo kept as override');
+my ($relback) = $jscal->vcalendarToEvents($jscal->eventsToVCalendar($rel));
+is_deeply($relback->{recurrenceOverrides}, $rel->{recurrenceOverrides}, 'relatedTo override round-trips');
