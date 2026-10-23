@@ -214,6 +214,7 @@ BEGIN {
   );
 
   %MustBeTopLevel = map { $_ => 1 } qw{
+    @type
     uid
     relatedTo
     prodId
@@ -222,6 +223,10 @@ BEGIN {
     recurrenceOverrides
     organizerCalendarAddress
     method
+    privacy
+    sentBy
+    recurrenceId
+    recurrenceIdTimeZone
   };
 
   # Color names defined in CSS Color Module Level 3
@@ -2378,6 +2383,11 @@ sub _maximise {
   delete $new->{recurrenceOverrides};
 
   foreach my $path (sort keys %$Recurrence) {
+    # overrides can't change the identity or type of the master event
+    my ($first) = $path =~ m{^([^/]*)};
+    my $key = _unquotekey($first);
+    next if $MustBeTopLevel{$key};
+    next if $path =~ m{^participants/[^/]+/calendarAddress$};
     my $value = $Recurrence->{$path};
     _apply_patch($path, $new, $value);
   }

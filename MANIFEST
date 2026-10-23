@@ -9,6 +9,7 @@ t/00-load.t
 t/api.t
 t/cyrus-caldav.t
 t/icalfiles.t
+t/override-toplevel.t
 testdata/alert.ics
 testdata/alert.je
 testdata/icalendar/alerts.ics
