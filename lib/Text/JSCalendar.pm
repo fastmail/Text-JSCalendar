@@ -54,6 +54,7 @@ my (
   %RecurrenceProperties,
   %UTCLinks,
   %MustBeTopLevel,
+  %OrganizerOnly,
 );
 
 BEGIN {
@@ -226,6 +227,16 @@ BEGIN {
     sentBy
     recurrenceId
     recurrenceIdTimeZone
+  };
+
+  # Participant properties that convert to ORGANIZER parameters
+  %OrganizerOnly = map { $_ => 1 } qw{
+    @type
+    calendarAddress
+    email
+    name
+    roles
+    sentBy
   };
 
   # Color names defined in CSS Color Module Level 3
@@ -1862,7 +1873,14 @@ sub _argsToVEvents {
         ? $Attendee->{roles}
         : { map { $_ => 1 } @{$Attendee->{roles} || []} };
 
-      next unless $roles->{attendee};
+      # jscalendarbis: every participant is an ATTENDEE unless the
+      # ORGANIZER fully represents it (jscalendar-icalendar 3.6)
+      unless ($roles->{attendee}) {
+        my $OrgUri = $Args->{organizerCalendarAddress};
+        next if defined $OrgUri and lc $OrgUri eq lc $Uri
+          and not grep { $_ ne 'owner' } keys %$roles
+          and not grep { !$OrganizerOnly{$_} } keys %$Attendee;
+      }
 
       $AttendeeProps{"CUTYPE"}     = uc $Attendee->{"kind"} if defined $Attendee->{"kind"};
       $AttendeeProps{"RSVP"}       = "TRUE" if $Attendee->{"expectReply"};
@@ -2279,10 +2297,11 @@ sub vcalendarToEvents {
       my $First = $exceptions{$uid}[0];
       $map{$uid} = {
         uid => $uid,
-        # these two are required at top level, but may be different
-        # in recurrences so aren't in MustBeTopLevel
+        # required at top level, but may be different in recurrences
+        # so not in MustBeTopLevel
         start => $First->{start},
         updated => $First->{updated},
+        version => $First->{version},
       };
       $map{$uid}{timeZone} = $First->{timeZone} unless $First->{showWithoutTime};
       foreach my $key (keys %MustBeTopLevel) {
@@ -2321,7 +2340,7 @@ sub _add_override {
   my ($override, $prefix, $New, $Old) = @_;
 
   # basic case - it's not an object, so we just override
-  if ($ENV{JMAP_ALWAYS_FULL} or ref($New) ne 'HASH' or ref($Old) or 'HASH') {
+  if ($ENV{JMAP_ALWAYS_FULL} or ref($New) ne 'HASH' or ref($Old) ne 'HASH') {
     $override->{$prefix} = $New;
     return;
   }

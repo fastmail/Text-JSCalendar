@@ -6,7 +6,7 @@ use Test::More;
 use Text::JSCalendar;
 use JSON::PP ();
 
-plan tests => 16;
+plan tests => 20;
 
 my $jscal = Text::JSCalendar->new();
 
@@ -103,3 +103,24 @@ ok($rel->{recurrenceOverrides}{'2025-06-02T10:00:00'}{relatedTo}{'parent@example
    'exception relatedTo kept as override');
 my ($relback) = $jscal->vcalendarToEvents($jscal->eventsToVCalendar($rel));
 is_deeply($relback->{recurrenceOverrides}, $rel->{recurrenceOverrides}, 'relatedTo override round-trips');
+
+# a synthetic master carries version, so overrides don't
+is($orphan->{version}, '2.0', 'synthetic master has version');
+ok(!exists $orphan->{recurrenceOverrides}{'2025-06-02T10:00:00'}{version}, 'no version in override');
+
+# a change inside a participant is a nested patch, and round-trips
+my $att = 'ATTENDEE;CN=Alice;PARTSTAT=NEEDS-ACTION:mailto:alice@example.com';
+my ($nested) = $jscal->vcalendarToEvents(join("\r\n",
+  'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:test',
+  'BEGIN:VEVENT', 'UID:nested@example.com', 'DTSTAMP:20250101T000000Z',
+  'DTSTART:20250601T100000Z', 'RRULE:FREQ=DAILY;COUNT=3', 'SUMMARY:x', $att,
+  'END:VEVENT',
+  'BEGIN:VEVENT', 'UID:nested@example.com', 'DTSTAMP:20250101T000000Z',
+  'RECURRENCE-ID:20250602T100000Z', 'DTSTART:20250602T100000Z', 'SUMMARY:x',
+  ($att =~ s/NEEDS-ACTION/ACCEPTED/r),
+  'END:VEVENT', 'END:VCALENDAR', ''));
+my ($pid) = keys %{$nested->{participants}};
+is_deeply($nested->{recurrenceOverrides}{'2025-06-02T10:00:00'},
+  { "participants/$pid/participationStatus" => 'accepted' }, 'nested participant patch');
+my ($nestedback) = $jscal->vcalendarToEvents($jscal->eventsToVCalendar($nested));
+is_deeply($nestedback->{recurrenceOverrides}, $nested->{recurrenceOverrides}, 'nested patch round-trips');

@@ -10,6 +10,7 @@ t/api.t
 t/cyrus-caldav.t
 t/icalfiles.t
 t/override-toplevel.t
+t/participants.t
 testdata/alert.ics
 testdata/alert.je
 testdata/icalendar/alerts.ics
