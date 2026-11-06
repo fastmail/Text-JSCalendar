@@ -608,14 +608,41 @@ sub _saneuid {
   return 1;
 }
 
+# The key the reader gives a participant whose ATTENDEE/ORGANIZER carries
+# no JSID: a hash of its address.  The writer omits JSID when the key
+# already matches this (jscalendar-icalendar 2.3.4, 2.3.29).
+sub _defaultParticipantKey {
+  my $uri = shift;
+  return undef unless defined $uri;
+  $uri =~ s/^mailto://i;
+  return undef if $uri eq '';
+  return sha1_hex(lc $uri);
+}
+
+# The JSID parameter (jscalendar-icalendar 4.2.1), or the older X-JMAP-ID,
+# if it is a valid Id (jscalendarbis 1.4.1).
+sub _propJSID {
+  my $Prop = shift;
+  for my $param (qw(jsid x-jmap-id)) {
+    my $id = $Prop->{params}{$param} && $Prop->{params}{$param}[0];
+    return $id if defined $id and $id =~ m/\A[A-Za-z0-9_-]{1,255}\z/;
+  }
+  return undef;
+}
+
 sub _makeParticipant {
-  my ($Self, $Calendar, $Participants, $VAttendee, $role) = @_;
+  my ($Self, $Calendar, $Participants, $VAttendee, $role, $AddrKeys) = @_;
 
   my $email = $VAttendee->{value};
   return unless $email;
   $email =~ s/^mailto://i;
   return if $email eq '';
-  my $id = sha1_hex(lc $email);
+  # jscalendar-icalendar 2.1.3: a JSID MUST be used as the key.  ORGANIZER
+  # and ATTENDEE with the same address are one participant, so a JSID on
+  # either of them keys both.
+  my $id = _propJSID($VAttendee)
+        // ($AddrKeys && $AddrKeys->{lc $email})
+        // sha1_hex(lc $email);
 
   $Participants->{$id} ||= {};
 
@@ -1118,11 +1145,19 @@ sub _getEventsFromVCalendar {
       # parse attendees {{{
 
       my %Participants;
+      my %AddrKeys;
+      for my $VProp (@{$VEvent->{properties}{organizer} || []},
+                     @{$VEvent->{properties}{attendee} || []}) {
+        my $jsid = _propJSID($VProp) // next;
+        my $addr = $VProp->{value} // next;
+        $addr =~ s/^mailto://i;
+        $AddrKeys{lc $addr} //= $jsid;
+      }
       for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
-        $Self->_makeParticipant($Calendar, \%Participants, $VOrganizer, 'owner');
+        $Self->_makeParticipant($Calendar, \%Participants, $VOrganizer, 'owner', \%AddrKeys);
       }
       for my $VAttendee (@{$VEvent->{properties}{attendee} || []}) {
-        $Self->_makeParticipant($Calendar, \%Participants, $VAttendee, 'attendee');
+        $Self->_makeParticipant($Calendar, \%Participants, $VAttendee, 'attendee', \%AddrKeys);
       }
 
       # }}}
@@ -1854,6 +1889,7 @@ sub _argsToVEvents {
   }
 
   my %namemap;
+  my %keymap;
   if ($Args->{participants}) {
     foreach my $partid (sort keys %{$Args->{participants}}) {
       my $Attendee = $Args->{participants}{$partid};
@@ -1863,7 +1899,16 @@ sub _argsToVEvents {
              // (defined $Attendee->{email} ? "mailto:$Attendee->{email}" : undef);
       next unless defined $Uri;
 
+      # jscalendar-icalendar 2.3.4: JSID carries the participant's key,
+      # and may be left out only when the reader would arrive at the same
+      # key anyway.  Without it, an override patching
+      # participants/<key>/... no longer finds its participant.
+      my $DefaultKey = _defaultParticipantKey($Uri);
+      my $NeedJSID = !(defined $DefaultKey and $DefaultKey eq $partid);
+      $keymap{lc $Uri} //= $partid if $NeedJSID;
+
       my %AttendeeProps;
+      $AttendeeProps{JSID} = $partid if $NeedJSID;
       if ($Attendee->{"name"}) {
         $AttendeeProps{"CN"} = $Attendee->{"name"};
         $namemap{lc $Uri} = $Attendee->{"name"};
@@ -1917,8 +1962,13 @@ sub _argsToVEvents {
   }
   if ($Args->{organizerCalendarAddress}) {
     my $OrgUri = $Args->{organizerCalendarAddress};
+    my %OrgProps;
     my $CN = $namemap{lc $OrgUri};
-    $VEvent->add_property(organizer => [ $OrgUri, $CN ? {CN => $CN} : () ]);
+    $OrgProps{CN} = $CN if $CN;
+    # the organizer's participant may not be written as an ATTENDEE, so
+    # its key must ride on the ORGANIZER (jscalendar-icalendar 2.3.29)
+    $OrgProps{JSID} = $keymap{lc $OrgUri} if defined $keymap{lc $OrgUri};
+    $VEvent->add_property(organizer => [ $OrgUri, %OrgProps ? \%OrgProps : () ]);
   }
 
   if ($Args->{links}) {
