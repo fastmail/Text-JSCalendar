@@ -630,6 +630,14 @@ sub _propJSID {
   return undef;
 }
 
+# DELEGATED-FROM and DELEGATED-TO are lists of quoted cal-addresses
+# (RFC 5545 3.2.4, 3.2.5), which the parser hands back joined with commas.
+# Split them again, but only before something that starts a URI, so a
+# comma inside an address survives.
+sub _splitCalAddresses {
+  return grep { length } map { split /,(?=[A-Za-z][A-Za-z0-9+.-]*:)/ } grep { defined } @_;
+}
+
 sub _makeParticipant {
   my ($Self, $Calendar, $Participants, $VAttendee, $role, $AddrKeys) = @_;
 
@@ -692,7 +700,7 @@ sub _makeParticipant {
 
   if ($VAttendee->{params}{"delegated-from"}) {
     my %df;
-    for my $uri (@{$VAttendee->{params}{"delegated-from"}}) {
+    for my $uri (_splitCalAddresses(@{$VAttendee->{params}{"delegated-from"}})) {
       $df{$uri} = $JSON::true;
     }
     $Participants->{$id}{delegatedFrom} = \%df if %df;
@@ -700,7 +708,7 @@ sub _makeParticipant {
 
   if ($VAttendee->{params}{"delegated-to"}) {
     my %dt;
-    for my $uri (@{$VAttendee->{params}{"delegated-to"}}) {
+    for my $uri (_splitCalAddresses(@{$VAttendee->{params}{"delegated-to"}})) {
       $dt{$uri} = $JSON::true;
     }
     $Participants->{$id}{delegatedTo} = \%dt if %dt;
@@ -1949,10 +1957,10 @@ sub _argsToVEvents {
       # default is REQ-PARTICIPANT
       $AttendeeProps{"SCHEDULE-AGENT"} = uc($Attendee->{scheduleAgent}) if $Attendee->{scheduleAgent};
       if ($Attendee->{delegatedFrom} && ref($Attendee->{delegatedFrom}) eq 'HASH') {
-        $AttendeeProps{"DELEGATED-FROM"} = join(',', sort keys %{$Attendee->{delegatedFrom}});
+        $AttendeeProps{"DELEGATED-FROM"} = [ sort keys %{$Attendee->{delegatedFrom}} ];
       }
       if ($Attendee->{delegatedTo} && ref($Attendee->{delegatedTo}) eq 'HASH') {
-        $AttendeeProps{"DELEGATED-TO"} = join(',', sort keys %{$Attendee->{delegatedTo}});
+        $AttendeeProps{"DELEGATED-TO"} = [ sort keys %{$Attendee->{delegatedTo}} ];
       }
 
       $AttendeeProps{PARTSTAT} = uc $Attendee->{"participationStatus"} if $Attendee->{"participationStatus"};
