@@ -107,7 +107,7 @@ BEGIN {
       href                 => [0, 'string',    1, undef],
       contentType          => [0, 'string',    0, undef],
       size                 => [0, 'number',    0, undef],
-      rel                  => [0, 'string',    0, undef],
+      rel                  => [0, 'string',    0, 'enclosure'],   # jscalendarbis-22 1.5.11
       title                => [0, 'string',    0, undef],
       display              => [2, 'bool',      0, undef],
     },
@@ -628,6 +628,16 @@ sub _propJSID {
     return $id if defined $id and $id =~ m/\A[A-Za-z0-9_-]{1,255}\z/;
   }
   return undef;
+}
+
+# (title => ...) from the first of the named parameters that is set.
+sub _linkTitle {
+  my ($Prop, @params) = @_;
+  for my $param (@params) {
+    my $v = $Prop->{params}{$param} && $Prop->{params}{$param}[0];
+    return (title => $v) if defined $v && length $v;
+  }
+  return ();
 }
 
 # DELEGATED-FROM and DELEGATED-TO are lists of quoted cal-addresses
@@ -1200,7 +1210,7 @@ sub _getEventsFromVCalendar {
 
         my $size = $Attach->{params}{size}[0];
 
-        $Links{sha1_hex(lc $uri)} = {
+        $Links{_propJSID($Attach) // sha1_hex(lc $uri)} = {
           href => $uri,
           rel => 'enclosure',
           defined $filename ? (title => $filename) : (),
@@ -1208,21 +1218,46 @@ sub _getEventsFromVCalendar {
           defined $size ? (size => 0+$size) : (),
         };
       }
+      # URL -> a link with rel "describedby", its title in LABEL
+      # (jscalendar-icalendar 2.3.46)
       foreach my $URL (@{$VEvent->{properties}{url} || []}) {
         my $uri = $URL->{value};
         next unless $uri;
-        $Links{sha1_hex(lc $uri)} = { href => $uri };
+        $Links{_propJSID($URL) // sha1_hex(lc $uri)} = {
+          href => $uri,
+          rel => 'describedby',
+          _linkTitle($URL, 'label'),
+        };
       }
-      # IMAGE -> links with rel='icon'
+      # IMAGE -> a link with rel "icon", its title in FILENAME
+      # (jscalendar-icalendar 2.3.22; LABEL, which this module used to
+      # write, is still read)
       foreach my $Image (@{$VEvent->{properties}{image} || []}) {
         my $uri = $Image->{value};
         next unless $uri;
-        my $id = sha1_hex(lc $uri);
-        $Links{$id} = {
+        my $size = $Image->{params}{size}[0];
+        my @display = map { lc } grep { length } map { split /,/ } @{$Image->{params}{display} || []};
+        $Links{_propJSID($Image) // sha1_hex(lc $uri)} = {
           href => $uri,
           rel => 'icon',
           defined $Image->{params}{fmttype}[0] ? (contentType => $Image->{params}{fmttype}[0]) : (),
-          defined $Image->{params}{label}[0] ? (title => $Image->{params}{label}[0]) : (),
+          (defined $size && $size =~ /^\d+$/) ? (size => 0+$size) : (),
+          @display ? (display => { map { $_ => $JSON::true } @display }) : (),
+          _linkTitle($Image, 'filename', 'label'),
+        };
+      }
+      # LINK with value type URI (jscalendar-icalendar 2.3.24): LINKREL is
+      # the rel, LABEL the title; any other value type does not convert
+      foreach my $Link (@{$VEvent->{properties}{link} || []}) {
+        my $uri = $Link->{value};
+        next unless $uri;
+        next unless lc($Link->{params}{value}[0] // 'uri') eq 'uri';
+        my $rel = $Link->{params}{linkrel}[0];
+        $Links{_propJSID($Link) // sha1_hex(lc $uri)} = {
+          href => $uri,
+          defined $rel && length $rel ? (rel => $rel) : (),
+          defined $Link->{params}{fmttype}[0] ? (contentType => $Link->{params}{fmttype}[0]) : (),
+          _linkTitle($Link, 'label'),
         };
       }
 
@@ -1980,24 +2015,46 @@ sub _argsToVEvents {
   }
 
   if ($Args->{links}) {
-    foreach my $uri (sort keys %{$Args->{links}}) {
-      my $Attach = $Args->{links}{$uri};
-      my $Url = $Attach->{href} || $uri;
-      if ($Attach->{rel} && $Attach->{rel} eq 'enclosure') {
-        my $FileName = $Attach->{title};
-        my $Mime = $Attach->{contentType};
-        my $Size = $Attach->{size};
-
-        my %AttachProps;
-        $AttachProps{FMTTYPE} = $Mime if defined $Mime;
-        $AttachProps{SIZE} = $Size if defined $Size;
-        $AttachProps{FILENAME} = $FileName if defined $FileName;
-        $VEvent->add_property(attach => [ $Url, \%AttachProps ]);
+    # jscalendar-icalendar 3.4: the property follows "rel" (whose default
+    # is "enclosure", jscalendarbis 1.5.11): enclosure -> ATTACH, icon ->
+    # IMAGE, the first describedby -> URL, anything else -> LINK.  The
+    # title is FILENAME on ATTACH and IMAGE, LABEL on URL and LINK; LINKREL
+    # goes on LINK only.  JSID carries the key unless the reader would
+    # arrive at it anyway.
+    my $HaveURL = 0;
+    foreach my $key (sort keys %{$Args->{links}}) {
+      my $Link = $Args->{links}{$key};
+      next unless ref $Link eq 'HASH';
+      my $Url = $Link->{href} // next;
+      my $rel = $Link->{rel} // 'enclosure';
+      my %Props;
+      $Props{JSID} = $key unless $key eq sha1_hex(lc $Url);
+      my $Name;
+      if ($rel eq 'enclosure') {
+        $Name = 'attach';
+        $Props{FILENAME} = $Link->{title} if defined $Link->{title};
+        $Props{SIZE} = $Link->{size} if defined $Link->{size};
       }
-      # otherwise it's just a URL
+      elsif ($rel eq 'icon') {
+        $Name = 'image';
+        $Props{VALUE} = 'URI';
+        $Props{FILENAME} = $Link->{title} if defined $Link->{title};
+        $Props{SIZE} = $Link->{size} if defined $Link->{size};
+        my @display = grep { $Link->{display}{$_} } sort keys %{ ref $Link->{display} eq 'HASH' ? $Link->{display} : {} };
+        $Props{DISPLAY} = join(',', map { uc } @display) if @display;
+      }
+      elsif ($rel eq 'describedby' && !$HaveURL++) {
+        $Name = 'url';
+        $Props{LABEL} = $Link->{title} if defined $Link->{title};
+      }
       else {
-        $VEvent->add_property(url => [ $Url ]);
+        $Name = 'link';
+        $Props{VALUE} = 'URI';
+        $Props{LINKREL} = $rel;
+        $Props{LABEL} = $Link->{title} if defined $Link->{title};
       }
+      $Props{FMTTYPE} = $Link->{contentType} if defined $Link->{contentType} && $Name ne 'url';
+      $VEvent->add_property($Name => [ $Url, %Props ? \%Props : () ]);
     }
   }
 
