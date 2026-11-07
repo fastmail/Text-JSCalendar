@@ -93,6 +93,7 @@ BEGIN {
       privacy              => [0, 'string',    0, 'public'],
       priority             => [0, 'number',    0, 0],
       organizerCalendarAddress => [0, 'string',  0, undef],
+      sentBy               => [0, 'string',    0, undef],
       endTimeZone          => [0, 'timezone',  0, undef],
       participants         => [2, 'object',    0, undef],
       alerts               => [2, 'object',    0, undef],
@@ -640,6 +641,21 @@ sub _linkTitle {
   return ();
 }
 
+# The SENT-BY parameter of an ATTENDEE or ORGANIZER as an email address
+# (the "mailto:" dropped), or undef.
+sub _mailto {
+  my $addr = shift;
+  return $addr =~ /^[A-Za-z][A-Za-z0-9+.-]*:/ ? $addr : "mailto:$addr";
+}
+
+sub _sentByAddress {
+  my $Prop = shift;
+  my $v = $Prop->{params}{'sent-by'} && $Prop->{params}{'sent-by'}[0];
+  return undef unless defined $v;
+  $v =~ s/^mailto://i;
+  return length $v ? $v : undef;
+}
+
 # DELEGATED-FROM and DELEGATED-TO are lists of quoted cal-addresses
 # (RFC 5545 3.2.4, 3.2.5), which the parser hands back joined with commas.
 # Split them again, but only before something that starts a URI, so a
@@ -693,6 +709,11 @@ sub _makeParticipant {
   }
   if ($VAttendee->{params}{"rsvp"}) {
     $Participants->{$id}{expectReply} = lc($VAttendee->{params}{"rsvp"}[0] // "") eq 'yes' ? $JSON::true : $JSON::false;
+  }
+  # SENT-BY is a cal-address; sentBy an email address (jscalendarbis-22
+  # 3.4.6, jscalendar-icalendar-29 2.3.4, 2.3.29)
+  if (my $SentBy = _sentByAddress($VAttendee)) {
+    $Participants->{$id}{sentBy} = $SentBy;
   }
   if (exists $VAttendee->{params}{"x-dtstamp"}) {
     my ($Date) = eval { $Self->_makeDateObj($VAttendee->{params}{"x-dtstamp"}[0], 'UTC', 'UTC') };
@@ -1486,6 +1507,16 @@ sub _getEventsFromVCalendar {
         $Event{organizerCalendarAddress} = $Participants{$partid}{calendarAddress};
       }
 
+      # sentBy (jscalendarbis-22 3.4.5): the ORGANIZER's SENT-BY
+      # (jscalendar-icalendar-29 2.3.29), which needs an organizer
+      if ($Event{organizerCalendarAddress}) {
+        for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
+          my $SentBy = _sentByAddress($VOrganizer) // next;
+          $Event{sentBy} = $SentBy;
+          last;
+        }
+      }
+
       # 4.4.5 participants
       $Event{participants} = \%Participants if %Participants;
 
@@ -1972,6 +2003,7 @@ sub _argsToVEvents {
 
   my %namemap;
   my %keymap;
+  my %sentbymap;
   if ($Args->{participants}) {
     foreach my $partid (sort keys %{$Args->{participants}}) {
       my $Attendee = $Args->{participants}{$partid};
@@ -2038,6 +2070,10 @@ sub _argsToVEvents {
       }
 
       $AttendeeProps{PARTSTAT} = uc $Attendee->{"participationStatus"} if $Attendee->{"participationStatus"};
+      if (defined $Attendee->{sentBy} and length $Attendee->{sentBy}) {
+        $AttendeeProps{"SENT-BY"} = _mailto($Attendee->{sentBy});
+        $sentbymap{lc $Uri} = $Attendee->{sentBy};
+      }
 
       $VEvent->add_property(attendee => [ $Uri, \%AttendeeProps ]);
     }
@@ -2050,6 +2086,9 @@ sub _argsToVEvents {
     # the organizer's participant may not be written as an ATTENDEE, so
     # its key must ride on the ORGANIZER (jscalendar-icalendar 2.3.29)
     $OrgProps{JSID} = $keymap{lc $OrgUri} if defined $keymap{lc $OrgUri};
+    # the Event's sentBy, else the organizer participant's (-29 3.7)
+    my $SentBy = $Args->{sentBy} // $sentbymap{lc $OrgUri};
+    $OrgProps{"SENT-BY"} = _mailto($SentBy) if defined $SentBy and length $SentBy;
     $VEvent->add_property(organizer => [ $OrgUri, %OrgProps ? \%OrgProps : () ]);
   }
 

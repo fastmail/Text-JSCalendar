@@ -71,4 +71,21 @@ sub event { my ($e) = $jscal->vcalendarToEvents(vevent(@_)); return $e }
   is($alert->($todo->('DUE:20250101T120000Z', $alarm->('-PT15M')))->{relativeTo}, 'end', 'with DUE, end stays');
 }
 
+# SENT-BY: the participant's sentBy, and the ORGANIZER's is also the
+# Event's (jscalendar-icalendar-29 2.3.29)
+{
+  my $e = event('DTSTART:20250101T100000Z',
+    'ORGANIZER;SENT-BY="mailto:assistant@example.com";CN=Boss:mailto:boss@example.com',
+    'ATTENDEE;SENT-BY="mailto:proxy@example.com";PARTSTAT=ACCEPTED:mailto:alice@example.com');
+  is($e->{sentBy}, 'assistant@example.com', 'ORGANIZER SENT-BY is the Event sentBy');
+  my ($org) = grep { $_->{calendarAddress} eq 'mailto:boss@example.com' } values %{$e->{participants}};
+  my ($att) = grep { $_->{calendarAddress} eq 'mailto:alice@example.com' } values %{$e->{participants}};
+  is($org->{sentBy}, 'assistant@example.com', 'and the organizer participant\'s');
+  is($att->{sentBy}, 'proxy@example.com', 'ATTENDEE SENT-BY is the participant sentBy');
+  my $ical = unfold($jscal->eventsToVCalendar($e));
+  like($ical, qr/^ORGANIZER;[^\n]*SENT-BY="?mailto:assistant\@example\.com"?/m, 'written back on ORGANIZER');
+  like($ical, qr/^ATTENDEE;[^\n]*SENT-BY="?mailto:proxy\@example\.com"?[^\n]*:mailto:alice/m, 'and on ATTENDEE');
+  ok(!exists event('DTSTART:20250101T100000Z')->{sentBy}, 'no organizer, no sentBy');
+}
+
 done_testing;
