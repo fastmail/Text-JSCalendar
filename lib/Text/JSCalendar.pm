@@ -456,6 +456,51 @@ sub new {
   return bless {@_}, ref($class) || $class;
 }
 
+=head2 $self->errors()
+
+What the last call to C<vcalendarToEvents> or C<eventsToVCalendar> (or
+C<_argsToVCalendar>) had to drop.  Neither dies because one component
+is bad: an iCalendar VEVENT or VTODO, VALARM or RRULE that cannot be
+converted is left out of the result, and so is a JSCalendar object or
+alert that cannot be written.  The rest of the calendar converts as
+usual.
+
+Returns a list of hashes, empty when nothing was dropped:
+
+    {
+      uid       => 'abc@example.com', # the object's UID (undef if it had none)
+      component => 'RRULE',           # what was dropped: VEVENT, VTODO,
+                                      # VALARM, RRULE (reading), or
+                                      # Event, Task, Alert (writing)
+      id        => 'alarm-1',         # the alarm or alert id, if known
+      message   => 'Invalid recurrence FREQ (fortnightly)',
+    }
+
+The list is reset at the start of each of those calls.
+
+=cut
+
+sub errors {
+  my $Self = shift;
+  return @{$Self->{_errors} || []};
+}
+
+# Report a dropped component.  $msg is a die message: only its first
+# line is kept, without Carp's location.
+sub _error {
+  my ($Self, $uid, $component, $msg, $id) = @_;
+  $msg = defined $msg ? "$msg" : '';
+  $msg =~ s/\n.*//s;
+  $msg =~ s/ at \S+ line \d+\.?$//;
+  $msg = 'unknown error' unless length $msg;
+  push @{$Self->{_errors}}, {
+    uid => $uid,
+    component => $component,
+    defined $id ? (id => $id) : (),
+    message => $msg,
+  };
+}
+
 =head2 $self->tz($name)
 
 Returns a DateTime::TimeZone object for the given name, but caches
@@ -998,734 +1043,766 @@ sub _getEventsFromVCalendar {
     my $prodid = $Calendar->{properties}{prodid}[0]{value};
 
     foreach my $VEvent (@{$Calendar->{objects} || []}) {
-      next unless lc $VEvent->{type} eq 'vevent' || lc $VEvent->{type} eq 'vtodo';
-      my $is_task = lc $VEvent->{type} eq 'vtodo';
-
-      # parse simple component properties {{{
-
-      my %Properties
-        = map { $_ => $VEvent->{properties}{$_}[0] }
-            keys %{$VEvent->{properties}};
-
-      my $uid = $Properties{uid}{value};
-      # Case: UID is badly broken or missing -
-      # let's just calculate a UID based on the incoming data.  This
-      # is the 'ICS sync url with no UIDs in it' case from BTS-3205,
-      # http://mozorg.cdn.mozilla.net/media/caldata/DutchHolidays.ics
-      $uid = _hexkey($VEvent) . '-syncauto' unless _saneuid($uid);
-
-      my $ShowAsFree = (lc($Properties{transp}{value} || '')) eq 'transparent';
-
-      # clean up whitespace on text fields
-      foreach my $Property (qw{description location summary}) {
-        next unless defined $Properties{$Property}{value};
-        $Properties{$Property}{value} =~ s/^\s+//gs;
-        $Properties{$Property}{value} =~ s/\s+$//gs;
-      }
-
-      my @description;
-      push @description, $Properties{description}{value}
-        if defined $Properties{description}{value};
-
-      # }}}
-
-      # parse time component properties {{{
-
-      my ($IsAllDay, $Start, $StartTimeZone, $End, $EndTimeZone) = ('') x 5;
-
-      confess "$uid: DTSTART not specified" unless defined $Properties{dtstart}{value};
-
-      ($Start, $StartTimeZone, $IsAllDay) = $Self->_getDateObj($Calendar, $Properties{dtstart});
-
-      if (defined $Properties{dtend}{value}) {
-        if (defined $Properties{duration}{value}) {
-          warn "$uid: DTEND and DURATION cannot both be set";
-        }
-
-        ($End, $EndTimeZone) = $Self->_getDateObj($Calendar, $Properties{dtend});
-      }
-      elsif (defined $Properties{duration}{value}) {
-        my $Duration = DateTime::Format::ICal->parse_duration(uc $Properties{duration}{value});
-        $End = $Start->clone()->add($Duration);
-        $EndTimeZone = $StartTimeZone;
+      my $type = lc($VEvent->{type} // '');
+      next unless $type eq 'vevent' || $type eq 'vtodo';
+      # each component on its own: one that cannot be converted is
+      # dropped (and reported by errors()), not the whole calendar
+      my $Event = eval { $Self->_vEventToEvent($Calendar, $VEvent, $method, $prodid) };
+      if ($Event) {
+        push @Events, $Event;
       }
       else {
-        $End         = $Start->clone();
-        $EndTimeZone = $StartTimeZone;
+        $Self->_error($VEvent->{properties}{uid}[0]{value}, uc $type, $@);
       }
-
-      if (DateTime->compare($Start, $End) > 0) {
-        # swap em!
-        ($Start, $End) = ($End, $Start);
-        ($StartTimeZone, $EndTimeZone) = ($EndTimeZone, $StartTimeZone);
-      }
-
-      if ($IsAllDay and $StartTimeZone) {
-        warn "$uid: AllDay event with timezone $StartTimeZone specified";
-      }
-
-      # if one is set, make sure they are both set
-      $StartTimeZone ||= $EndTimeZone;
-      $EndTimeZone   ||= $StartTimeZone;
-
-      # }}}
-
-      my %Recurrence;
-
-      if (exists $Properties{rrule}) {
-        my %RRULE;
-
-        foreach my $RRULE (@{$Properties{rrule}{values}}) {
-          my ($Key,$Value) = split '=', $RRULE;
-          next unless defined $Value;
-
-          $RRULE{lc $Key} = $Value;
-        }
-
-        # parse simple recurrence properties {{{
-
-        if (exists $RRULE{freq}) {
-          my $freq = lc $RRULE{freq};
-          unless ($ValidFrequency{$freq}) {
-            confess "$uid: Invalid recurrence FREQ ($freq)";
-          }
-
-          $Recurrence{frequency} = $freq;
-        }
-        else {
-          confess "$uid: Recurrence FREQ not specified";
-        }
-
-        if (exists $RRULE{interval}) {
-          unless ($RRULE{interval} =~ /^\d+$/) {
-            confess "$uid: Invalid recurrence INTERVAL ($RRULE{interval})";
-          }
-          my $interval = int $RRULE{interval};
-
-          if ($interval == 0) {
-            confess "$uid: Recurrence INTERVAL is out of range ($RRULE{interval})";
-          }
-
-          # default == 1, so don't set a key for it
-          if ($interval > 1) {
-            $Recurrence{interval} = $interval;
-          }
-        }
-
-        if (exists $RRULE{rscale}) {
-          $Recurrence{rscale} = lc $RRULE{rscale};
-          $Recurrence{skip} = lc $RRULE{skip} if $RRULE{skip};
-        }
-
-        if (exists $RRULE{wkst}) {
-          my $wkst = lc $RRULE{wkst};
-          unless ($ValidDay{$wkst}) {
-            confess "$uid: Invalid recurrence WKST ($wkst)";
-          }
-
-          # default is Monday, so don't set a key for it
-          if ($wkst ne 'mo') {
-            $Recurrence{firstDayOfWeek} = $wkst;
-          }
-        }
-
-        if (exists $RRULE{byday}) {
-          my @byDays;
-
-          foreach my $BYDAY (split ',', $RRULE{byday}) {
-            push @byDays, _BYDAY2byDay(lc $BYDAY);
-          }
-
-          $Recurrence{byDay} = \@byDays if @byDays;
-        }
-
-        if (exists $RRULE{bymonth}) {
-          foreach my $BYMONTH (split ',', $RRULE{bymonth}) {
-            unless ($BYMONTH =~ /^\d+L?$/) {
-              confess "$uid: Invalid recurrence BYMONTH ($BYMONTH, $RRULE{bymonth})";
-            }
-
-            push @{$Recurrence{byMonth}}, "$BYMONTH";
-          }
-        }
-
-        if (exists $RRULE{count}) {
-          if (exists $RRULE{until}) {
-            #confess "$uid: Recurrence COUNT and UNTIL cannot both be set";
-            # seen in the wild: PRODID:-//dmfs.org//mimedir.icalendar//EN
-            delete $RRULE{until};
-          }
-
-          unless ($RRULE{count} =~ /^\d+$/) {
-            confess "$uid: Invalid recurrence COUNT ($RRULE{count})";
-          }
-
-          $Recurrence{count} = int $RRULE{count};
-        }
-
-        if (exists $RRULE{until}) {
-          # rfc5545 3.3.10 - UNTIL must be in DTSTART timezone, but both
-          # google and iCloud store it in Z, so we will too as per rfc2445.
-          my ($Until, $IsAllDay) = $Self->_makeDateObj($RRULE{until}, $StartTimeZone, $StartTimeZone);
-          $Recurrence{until} = $Until->iso8601();
-        }
-
-        # }}}
-
-        # parse generic recurrence properties {{{
-
-        foreach my $Property (keys %RecurrenceProperties) {
-          if (defined $RRULE{$Property}) {
-            foreach my $Value (split ',', $RRULE{$Property}) {
-              my ($Valid, $Min) = $RecurrenceProperties{$Property}{signed}
-                ? ('[-+]?[1-9]\d*', ($RecurrenceProperties{$Property}{max} * -1))
-                : ('\d+', 0);
-
-              unless ($Value =~ /^$Valid$/) {
-                confess "$uid: Invalid recurrence $Property ($Value)";
-              }
-
-              unless (($Value >= $Min) and ($Value <= $RecurrenceProperties{$Property}{max})) {
-                confess "$uid: Recurrence $Property is out of range ($Value)";
-              }
-
-              push @{$Recurrence{$RecurrenceProperties{$Property}{name}}}, int $Value;
-            }
-          }
-        }
-
-        # }}}
-      }
-
-      my %Overrides;
-      if (exists $VEvent->{properties}{exdate}) {
-        foreach my $Item (@{$VEvent->{properties}{exdate}}) {
-          foreach my $Date ($Self->_getDateObjMulti($Calendar, $Item, $StartTimeZone)) {
-            $Overrides{$Date->iso8601()} = { excluded => $JSON::true }; # 4.3.3
-          }
-        }
-      }
-
-      if ($VEvent->{properties}{rdate}) {
-        # rdate      = "RDATE" rdtparam ":" rdtval *("," rdtval) CRLF
-        foreach my $Item (@{$VEvent->{properties}{rdate}}) {
-          # a PERIOD's start is the key and its length the patch's
-          # duration (jscalendar-icalendar-29 2.3.33)
-          if (lc($Item->{params}{value}[0] || '') eq 'period') {
-            my $TimeZone = $Self->_getTimeZone($Calendar, $Item);
-            foreach my $Period (split /,/, $Item->{value}) {
-              my ($From, $To) = split m{/}, $Period, 2;
-              my ($Date) = eval { $Self->_makeDateObj($From, $TimeZone, $StartTimeZone) } or next;
-              my $Length;
-              if (defined $To and $To =~ /^[+-]?P/i) {
-                $Length = eval { DateTime::Format::ICal->parse_duration(uc $To) };
-              }
-              elsif (defined $To) {
-                my ($Until) = eval { $Self->_makeDateObj($To, $TimeZone, $StartTimeZone) };
-                $Length = $Until->subtract_datetime($Date) if $Until;
-              }
-              $Overrides{$Date->iso8601()} = ($Length && !$Length->is_negative)
-                ? { duration => $Self->_make_duration($Length) } : {};
-            }
-            next;
-          }
-          foreach my $Date ($Self->_getDateObjMulti($Calendar, $Item, $StartTimeZone)) {
-            $Overrides{$Date->iso8601()} = {};
-          }
-        }
-      }
-
-      # parse alarms {{{
-
-      my %Alerts;
-      foreach my $VAlarm (@{$VEvent->{objects} || []}) {
-        next unless lc $VAlarm->{type} eq 'valarm';
-
-        my %AlarmProperties
-          = map { $_ => $VAlarm->{properties}{$_}[0] }
-              keys %{$VAlarm->{properties}};
-
-        my $alarmuid = $AlarmProperties{uid}{value}
-                    || $AlarmProperties{'x-wr-alarmuid'}{value}
-                    || _hexkey($VAlarm, $uid) . '-alarmauto';
-
-        my %Alert;
-        $Alert{'@type'} = 'Alert';
-
-        my $AlarmAction = lc $AlarmProperties{action}{value};
-        next unless $AlarmAction;
-
-        if ($AlarmAction eq 'display' || $AlarmAction eq 'audio') {
-          $Alert{action} = 'display';
-        }
-        elsif ($AlarmAction eq 'email') {
-          $Alert{action} = 'email';
-        }
-        elsif ($AlarmAction eq 'none') {
-          next;
-        }
-        else {
-          warn "$uid: UNKNOWN VALARM ACTION $AlarmAction";
-          next;
-        }
-
-        if ($AlarmProperties{acknowledged}) {
-          my $date = $Self->_getDateObj($Calendar, $AlarmProperties{acknowledged}, 'UTC');
-          $Alert{acknowledged} = $date->iso8601() . 'Z';
-        }
-
-        my $Trigger = $AlarmProperties{trigger}{value}
-          || next;
-
-        my $Related = (lc ($AlarmProperties{trigger}{params}{related}[0] || '') eq 'end')
-          ? 'end'
-          : 'start';
-
-        if ($Trigger =~ m/^[+-]?P/i) {
-          my $Duration = eval { DateTime::Format::ICal->parse_duration(uc $Trigger) }
-            || next;
-
-          my ($IsNeg, $OffsetStr);
-          if ($Duration->is_negative()) {
-            $Duration = $Duration->inverse();
-            $IsNeg = 1;
-          }
-          # jscalendarbis-22 3.5.1: on a Task, "end" MUST NOT be used
-          # without a due.  RFC 5545 3.8.6.3 puts such a VTODO's end at
-          # DTSTART + DURATION, so say the same instant relative to start.
-          if ($is_task and $Related eq 'end' and not $Properties{due}{value}) {
-            my $Span = $End->subtract_datetime($Start);
-            $Duration = $IsNeg ? $Span->clone->subtract_duration($Duration)
-                               : $Span->clone->add_duration($Duration);
-            $IsNeg = 0;
-            if ($Duration->is_negative()) {
-              $Duration = $Duration->inverse();
-              $IsNeg = 1;
-            }
-            $Related = 'start';
-          }
-          $OffsetStr = ($IsNeg ? '-' : '') . $Self->_make_duration($Duration);
-          $Alert{trigger} = {
-            '@type'      => 'OffsetTrigger',
-            'offset'     => $OffsetStr,
-            'relativeTo' => $Related,
-          };
-        }
-        else {
-          # Absolute trigger (VALUE=DATE-TIME)
-          my $AlertDate = $Self->_getDateObj($Calendar, $AlarmProperties{trigger}, 'UTC');
-          $Alert{trigger} = {
-            '@type' => 'AbsoluteTrigger',
-            'when'  => $AlertDate->iso8601() . 'Z',
-          };
-        }
-
-        $Alerts{$alarmuid} = \%Alert;
-      }
-
-      # }}}
-
-      # parse attendees {{{
-
-      my %Participants;
-      my %AddrKeys;
-      for my $VProp (@{$VEvent->{properties}{organizer} || []},
-                     @{$VEvent->{properties}{attendee} || []}) {
-        my $jsid = _propJSID($VProp) // next;
-        my $addr = $VProp->{value} // next;
-        $addr =~ s/^mailto://i;
-        $AddrKeys{lc $addr} //= $jsid;
-      }
-      for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
-        $Self->_makeParticipant($Calendar, \%Participants, $VOrganizer, 'owner', \%AddrKeys);
-      }
-      for my $VAttendee (@{$VEvent->{properties}{attendee} || []}) {
-        $Self->_makeParticipant($Calendar, \%Participants, $VAttendee, 'attendee', \%AddrKeys);
-      }
-
-      # }}}
-
-      # parse attachments {{{
-
-      my %Links;
-      foreach my $Attach (@{$VEvent->{properties}{attach} || []}) {
-        next unless $Attach->{value};
-
-        my $uri;
-        my $encoding = lc($Attach->{params}{encoding}[0] || '');
-        if ($encoding eq 'base64' || $encoding eq 'b') {
-          # Binary ATTACH - convert to data: URI
-          my $mime = $Attach->{params}{fmttype}[0] || 'application/octet-stream';
-          $uri = "data:$mime;base64," . $Attach->{value};
-        }
-        elsif (grep { $Attach->{value} =~ m{^$_://} } qw{http https ftp data}) {
-          $uri = $Attach->{value};
-        }
-        else {
-          next;
-        }
-
-        my $filename = $Attach->{params}{filename}[0];
-        my $mime = $Attach->{params}{fmttype}[0];
-        if (not defined $mime and $filename) {
-          $::MimeTypes ||= MIME::Types->new;
-          my $MimeTypeObj = $::MimeTypes->mimeTypeOf($filename);
-          $mime = $MimeTypeObj->type() if $MimeTypeObj;
-        }
-
-        my $size = $Attach->{params}{size}[0];
-
-        $Links{_propJSID($Attach) // sha1_hex(lc $uri)} = {
-          href => $uri,
-          rel => 'enclosure',
-          defined $filename ? (title => $filename) : (),
-          defined $mime ? (contentType => $mime) : (),
-          defined $size ? (size => 0+$size) : (),
-        };
-      }
-      # URL -> a link with rel "describedby", its title in LABEL
-      # (jscalendar-icalendar 2.3.46)
-      foreach my $URL (@{$VEvent->{properties}{url} || []}) {
-        my $uri = $URL->{value};
-        next unless $uri;
-        $Links{_propJSID($URL) // sha1_hex(lc $uri)} = {
-          href => $uri,
-          rel => 'describedby',
-          _linkTitle($URL, 'label'),
-        };
-      }
-      # IMAGE -> a link with rel "icon", its title in FILENAME
-      # (jscalendar-icalendar 2.3.22; LABEL, which this module used to
-      # write, is still read)
-      foreach my $Image (@{$VEvent->{properties}{image} || []}) {
-        my $uri = $Image->{value};
-        next unless $uri;
-        my $size = $Image->{params}{size}[0];
-        my @display = map { lc } grep { length } map { split /,/ } @{$Image->{params}{display} || []};
-        $Links{_propJSID($Image) // sha1_hex(lc $uri)} = {
-          href => $uri,
-          rel => 'icon',
-          defined $Image->{params}{fmttype}[0] ? (contentType => $Image->{params}{fmttype}[0]) : (),
-          (defined $size && $size =~ /^\d+$/) ? (size => 0+$size) : (),
-          @display ? (display => { map { $_ => $JSON::true } @display }) : (),
-          _linkTitle($Image, 'filename', 'label'),
-        };
-      }
-      # LINK with value type URI (jscalendar-icalendar 2.3.24): LINKREL is
-      # the rel, LABEL the title; any other value type does not convert
-      foreach my $Link (@{$VEvent->{properties}{link} || []}) {
-        my $uri = $Link->{value};
-        next unless $uri;
-        next unless lc($Link->{params}{value}[0] // 'uri') eq 'uri';
-        my $rel = $Link->{params}{linkrel}[0];
-        $Links{_propJSID($Link) // sha1_hex(lc $uri)} = {
-          href => $uri,
-          defined $rel && length $rel ? (rel => $rel) : (),
-          defined $Link->{params}{fmttype}[0] ? (contentType => $Link->{params}{fmttype}[0]) : (),
-          _linkTitle($Link, 'label'),
-        };
-      }
-
-      # }}}
-
-      # parse CONFERENCE -> virtualLocations {{{
-
-      my %VirtualLocations;
-      foreach my $Conference (@{$VEvent->{properties}{conference} || []}) {
-        next unless $Conference->{value};
-        my $id = $Conference->{params}{'x-jmap-id'}[0] || sha1_hex($Conference->{value});
-        my %vloc = ('@type' => 'VirtualLocation', uri => $Conference->{value});
-        if ($Conference->{params}{label}) {
-          $vloc{name} = $Conference->{params}{label}[0];
-        }
-        if ($Conference->{params}{feature}) {
-          my @features = map { lc $_ } map { split /,/ } @{$Conference->{params}{feature}};
-          $vloc{features} = { map { $_ => $JSON::true } @features };
-        }
-        $VirtualLocations{$id} = \%vloc;
-      }
-
-      # }}}
-
-      # Parse keywords {{{
-
-      my %keywords;
-      foreach my $Categories (@{$VEvent->{properties}{categories} || []}) {
-        my $val = $Categories->{value};
-        $keywords{$_} = $JSON::true for split ',', $val;
-      }
-      delete $keywords{''}; # just in case it was created by leading or trailing ,
-
-      # }}}
-
-      # Parse relations {{{
-
-      my %relations;
-      foreach my $Relation (@{$VEvent->{properties}{'related-to'} || []}) {
-        my $reltype = $Relation->{params}{reltype}[0] || 'parent';
-        $reltype = lc $reltype if grep { $_ eq lc $reltype } qw(first next parent child);
-        $relations{$Relation->{value}}{'@type'} = 'Relation';
-        $relations{$Relation->{value}}{relation}{$reltype} = $JSON::true;
-      }
-
-      # }}}
-
-      my %Event = ();
-
-      # ==============================================================
-      # 4.1 Metadata
-
-      # 4.1.1 @type (JSCalendar bis uses capitalized names)
-      $Event{'@type'} = $is_task ? 'Task' : 'Event';
-
-      # 4.1.2 uid
-      $Event{uid} = "$uid";
-
-      # 4.1.3 relatedTo
-      $Event{relatedTo} = \%relations if %relations;
-
-      # 4.1.4 prodId
-      $Event{prodId} = $prodid if defined $prodid;
-
-      # 4.1.5 created
-      if ($Properties{created}{value}) {
-        # UTC item
-        my $Date = eval { $Self->_getDateObj($Calendar, $Properties{created}, 'UTC') };
-        $Event{created} = $Date->iso8601() . 'Z' if $Date;
-      }
-
-      # 4.1.6 updated
-      if ($Properties{dtstamp}{value}) {
-        # UTC item
-        my $Date = eval { $Self->_getDateObj($Calendar, $Properties{dtstamp}, 'UTC') };
-        $Event{updated} = $Date->iso8601() . 'Z' if $Date;
-      }
-      if (not $Event{updated} and $Properties{'last-modified'}{value}) {
-        # UTC item
-        my $Date = eval { $Self->_getDateObj($Calendar, $Properties{'last-modified'}, 'UTC') };
-        $Event{updated} = $Date->iso8601() . 'Z' if $Date;
-      }
-      $Event{updated} ||= DateTime->now->iso8601();
-
-      # 4.1.7 sequence
-      $Event{sequence} = int($Properties{sequence}{value}) if $Properties{sequence};
-
-      # 4.1.8 method
-      $Event{method} = $method if $method;
-
-      # ==============================================================
-      # 4.2 What and where
-
-      # 4.2.1 title
-      $Event{title} = $Properties{summary}{value}
-        if ($Properties{summary} and defined $Properties{summary}{value});
-
-      # 4.2.2 description
-      # STYLED-DESCRIPTION overrides DESCRIPTION if present
-      if ($Properties{'styled-description'}{value}) {
-        $Event{description} = $Properties{'styled-description'}{value};
-        $Event{descriptionContentType} = $Properties{'styled-description'}{params}{fmttype}[0] // 'text/html';
-      }
-      elsif (@description) {
-        $Event{description} = join("\n", @description);
-      }
-
-      # 4.2.4 locations
-      if ($Properties{location}{value}) {
-        $Event{locations}{location} = { '@type' => 'Location', name => $Properties{location}{value} };
-      }
-      # X-APPLE-STRUCTURED-LOCATION -> location with coordinates, name, description
-      # Check for Apple structured locations first; if present, skip plain GEO
-      my $has_apple_location = scalar @{$VEvent->{properties}{'x-apple-structured-location'} || []};
-
-      # GEO -> separate location with coordinates (only if no Apple structured location)
-      if (!$has_apple_location && $Properties{geo}{value}) {
-        my ($lat, $lon) = split /;/, $Properties{geo}{value};
-        if (defined $lat && defined $lon) {
-          my $coords = "geo:$lat,$lon";
-          my $locid = $Event{locations} ? 'geo' : 'location';
-          $Event{locations}{$locid} = { '@type' => 'Location', coordinates => $coords };
-        }
-      }
-
-      for my $ASL (@{$VEvent->{properties}{'x-apple-structured-location'} || []}) {
-        next unless $ASL->{value};
-        my %loc = ('@type' => 'Location');
-        if ($ASL->{value} =~ m{^geo:([-\d.]+),([-\d.]+)}) {
-          $loc{coordinates} = $ASL->{value};
-        }
-        my $title = $ASL->{params}{'x-title'}[0];
-        $loc{name} = $title if defined $title && $title ne '';
-        my $address = $ASL->{params}{'x-address'}[0];
-        $loc{description} = $address if defined $address && $address ne '';
-        if (keys %loc > 1) {  # more than just @type
-          my $locid = sha1_hex($ASL->{value} || 'apple-location');
-          $Event{locations}{$locid} = \%loc;
-        }
-      }
-
-      # 4.2.5 virtualLocations
-      $Event{virtualLocations} = \%VirtualLocations if %VirtualLocations;
-
-      # 4.2.6 links
-      $Event{links} = \%Links if %Links;
-
-      # 4.2.7 locale
-      my $language;
-      if ($Properties{description} and $Properties{description}{params}{language}) {
-        $language = $Properties{description}{params}{language}[0];
-      }
-      if ($Properties{summary} and $Properties{summary}{params}{language}) {
-        $language = $Properties{summary}{params}{language}[0];
-      }
-      $Event{locale} = $language if $language;
-
-      # 4.2.8 keywords
-      $Event{keywords} = \%keywords if %keywords;
-
-      # 4.2.9 categories is not supported
-
-      # 4.2.10 color
-      # (one the module cannot read is dropped: it used to die, taking the
-      # whole calendar with it)
-      if ($Properties{color}) {
-        my $color = eval { _fixColor($Properties{color}{value}) };
-        $Event{color} = $color if defined $color;
-      }
-
-      # ==============================================================
-      # 4.3 Recurrence properties
-
-      # 4.3.1 recurrenceRule (a singular object since jscalendarbis-15)
-      if (%Recurrence) {
-        $Recurrence{'@type'} = 'RecurrenceRule';
-        $Event{recurrenceRule} = \%Recurrence;
-      }
-
-      # 4.3.2 recurrenceOverrides
-      $Event{recurrenceOverrides} = \%Overrides if %Overrides;
-
-      # ... special case for recurrence overrides when processing the child ...
-      if ($Properties{'recurrence-id'}{value}) {
-        # in our system it's always in the timezone of the event, but iCloud
-        # returns it in UTC despite the event having a timezone.  Super weird.
-        # Anyway, we need to format it to the StartTimeZone of the parent
-        # event if there is one, and we don't have that yet!
-        $Event{_recurrenceObj} = $Self->_getDateObj($Calendar, $Properties{'recurrence-id'});
-      }
-
-      # ==============================================================
-      # 4.4 Sharing and scheduling properties
-
-      # 4.4.1 priority
-      if ($Properties{priority}{value}) {
-        # default is '0', so truth test is sufficient!
-        $Event{priority} = int($Properties{priority}{value});
-      }
-
-      # 4.4.2 freeBusyStatus
-      if ($Properties{transp}{value}) {
-        $Event{freeBusyStatus} = 'free' if lc($Properties{transp}{value}) eq 'transparent';
-      }
-
-      # 4.4.3 privacy (from CLASS property)
-      if ($Properties{class}{value}) {
-        my $cls = lc($Properties{class}{value});
-        if ($cls eq 'confidential') { $Event{privacy} = 'secret' }
-        # jscalendar-icalendar-29 2.3.7: any other value MUST be private
-        elsif ($cls ne 'public') { $Event{privacy} = 'private' }
-      }
-
-      # 4.4.4 organizerCalendarAddress
-      foreach my $partid (sort keys %Participants) { # later wins
-        next unless $Participants{$partid}{roles}{owner};
-        $Event{organizerCalendarAddress} = $Participants{$partid}{calendarAddress};
-      }
-
-      # sentBy (jscalendarbis-22 3.4.5): the ORGANIZER's SENT-BY
-      # (jscalendar-icalendar-29 2.3.29), which needs an organizer
-      if ($Event{organizerCalendarAddress}) {
-        for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
-          my $SentBy = _sentByAddress($VOrganizer) // next;
-          $Event{sentBy} = $SentBy;
-          last;
-        }
-      }
-
-      # 4.4.5 participants
-      $Event{participants} = \%Participants if %Participants;
-
-      # ==============================================================
-      # 4.5 Alerts
-
-      # 4.5.1 alerts
-      $Event{alerts} = \%Alerts if %Alerts;
-
-      # version (jscalendarbis)
-      $Event{version} = '2.0';
-
-      # 4.6.1 localisations is not supported
-
-      # ==============================================================
-      # 5.1 JSEvent specific properties
-
-      # 5.1.1 start
-      $Event{start} = $Start->iso8601() if ref($Start);
-
-      # 5.1.2 timeZone: not set for a DATE or a floating time (it can no
-      # longer be null, jscalendarbis-22 3.6.1, jscalendar-icalendar-29 2.1.5)
-      $Event{timeZone} = $StartTimeZone if not $IsAllDay and defined $StartTimeZone and length $StartTimeZone;
-
-      # endTimeZone (jscalendarbis): set if end timezone differs from start
-      if (!$IsAllDay && $EndTimeZone && $StartTimeZone && $EndTimeZone ne $StartTimeZone) {
-        $Event{endTimeZone} = $EndTimeZone;
-      }
-
-      # 5.1.3 duration
-      my $duration = $Self->_make_duration($End->subtract_datetime($Start), $IsAllDay);
-      $Event{duration} = $duration if $duration;
-
-      # 5.1.4 showWithoutTime (RFC 8984)
-      $Event{showWithoutTime} = $IsAllDay ? $JSON::true : $JSON::false;
-      # SHOW-WITHOUT-TIME property (for DATE-TIME events shown as all-day)
-      if (!$IsAllDay && $Properties{'show-without-time'}{value}) {
-        my $swt = lc($Properties{'show-without-time'}{value});
-        $Event{showWithoutTime} = $JSON::true if $swt eq 'true' || $swt eq 'yes';
-      }
-
-      # 5.1.5 status
-      if ($Properties{status}{value}) {
-        $Event{status} = lc($Properties{status}{value}) if lc($Properties{status}{value}) ne 'confirmed';
-      }
-
-      # Task-specific properties (VTODO)
-      if ($is_task) {
-        if ($Properties{due}{value}) {
-          my ($Due, $DueTz) = $Self->_getDateObj($Calendar, $Properties{due});
-          $Event{due} = $Due->iso8601();
-        }
-        if (defined $Properties{'percent-complete'}{value}) {
-          $Event{percentComplete} = int($Properties{'percent-complete'}{value});
-        }
-        if ($Properties{'estimated-duration'}{value}) {
-          $Event{estimatedDuration} = uc $Properties{'estimated-duration'}{value};
-        }
-        if ($Properties{completed}{value}) {
-          $Event{progress} = 'completed';
-        }
-        elsif (lc($Properties{status}{value} || '') eq 'in-process') {
-          $Event{progress} = 'in-process';
-        }
-        elsif (lc($Properties{status}{value} || '') eq 'cancelled') {
-          $Event{progress} = 'cancelled';
-        }
-      }
-
-      push @Events, \%Event;
     }
   }
 
   return \@Events;
+}
+
+# One VEVENT or VTODO as an Event or Task.  Dies if it cannot be
+# converted; a bad VALARM or RRULE in it is dropped and reported instead.
+sub _vEventToEvent {
+  my ($Self, $Calendar, $VEvent, $method, $prodid) = @_;
+
+  my $is_task = lc $VEvent->{type} eq 'vtodo';
+
+  # parse simple component properties {{{
+
+  my %Properties
+    = map { $_ => $VEvent->{properties}{$_}[0] }
+        keys %{$VEvent->{properties}};
+
+  my $uid = $Properties{uid}{value};
+  # Case: UID is badly broken or missing -
+  # let's just calculate a UID based on the incoming data.  This
+  # is the 'ICS sync url with no UIDs in it' case from BTS-3205,
+  # http://mozorg.cdn.mozilla.net/media/caldata/DutchHolidays.ics
+  $uid = _hexkey($VEvent) . '-syncauto' unless _saneuid($uid);
+
+  my $ShowAsFree = (lc($Properties{transp}{value} || '')) eq 'transparent';
+
+  # clean up whitespace on text fields
+  foreach my $Property (qw{description location summary}) {
+    next unless defined $Properties{$Property}{value};
+    $Properties{$Property}{value} =~ s/^\s+//gs;
+    $Properties{$Property}{value} =~ s/\s+$//gs;
+  }
+
+  my @description;
+  push @description, $Properties{description}{value}
+    if defined $Properties{description}{value};
+
+  # }}}
+
+  # parse time component properties {{{
+
+  my ($IsAllDay, $Start, $StartTimeZone, $End, $EndTimeZone) = ('') x 5;
+
+  confess "$uid: DTSTART not specified" unless defined $Properties{dtstart}{value};
+
+  ($Start, $StartTimeZone, $IsAllDay) = $Self->_getDateObj($Calendar, $Properties{dtstart});
+
+  if (defined $Properties{dtend}{value}) {
+    if (defined $Properties{duration}{value}) {
+      warn "$uid: DTEND and DURATION cannot both be set";
+    }
+
+    ($End, $EndTimeZone) = $Self->_getDateObj($Calendar, $Properties{dtend});
+  }
+  elsif (defined $Properties{duration}{value}) {
+    my $Duration = DateTime::Format::ICal->parse_duration(uc $Properties{duration}{value});
+    $End = $Start->clone()->add($Duration);
+    $EndTimeZone = $StartTimeZone;
+  }
+  else {
+    $End         = $Start->clone();
+    $EndTimeZone = $StartTimeZone;
+  }
+
+  if (DateTime->compare($Start, $End) > 0) {
+    # swap em!
+    ($Start, $End) = ($End, $Start);
+    ($StartTimeZone, $EndTimeZone) = ($EndTimeZone, $StartTimeZone);
+  }
+
+  if ($IsAllDay and $StartTimeZone) {
+    warn "$uid: AllDay event with timezone $StartTimeZone specified";
+  }
+
+  # if one is set, make sure they are both set
+  $StartTimeZone ||= $EndTimeZone;
+  $EndTimeZone   ||= $StartTimeZone;
+
+  # }}}
+
+  my %Recurrence;
+
+  if (exists $Properties{rrule}) {
+    # a rule that cannot be read drops only itself (see errors())
+    my $ok = eval {
+      my %RRULE;
+
+      foreach my $RRULE (@{$Properties{rrule}{values}}) {
+        my ($Key,$Value) = split '=', $RRULE;
+        next unless defined $Value;
+
+        $RRULE{lc $Key} = $Value;
+      }
+
+      # parse simple recurrence properties {{{
+
+      if (exists $RRULE{freq}) {
+        my $freq = lc $RRULE{freq};
+        unless ($ValidFrequency{$freq}) {
+          confess "$uid: Invalid recurrence FREQ ($freq)";
+        }
+
+        $Recurrence{frequency} = $freq;
+      }
+      else {
+        confess "$uid: Recurrence FREQ not specified";
+      }
+
+      if (exists $RRULE{interval}) {
+        unless ($RRULE{interval} =~ /^\d+$/) {
+          confess "$uid: Invalid recurrence INTERVAL ($RRULE{interval})";
+        }
+        my $interval = int $RRULE{interval};
+
+        if ($interval == 0) {
+          confess "$uid: Recurrence INTERVAL is out of range ($RRULE{interval})";
+        }
+
+        # default == 1, so don't set a key for it
+        if ($interval > 1) {
+          $Recurrence{interval} = $interval;
+        }
+      }
+
+      if (exists $RRULE{rscale}) {
+        $Recurrence{rscale} = lc $RRULE{rscale};
+        $Recurrence{skip} = lc $RRULE{skip} if $RRULE{skip};
+      }
+
+      if (exists $RRULE{wkst}) {
+        my $wkst = lc $RRULE{wkst};
+        unless ($ValidDay{$wkst}) {
+          confess "$uid: Invalid recurrence WKST ($wkst)";
+        }
+
+        # default is Monday, so don't set a key for it
+        if ($wkst ne 'mo') {
+          $Recurrence{firstDayOfWeek} = $wkst;
+        }
+      }
+
+      if (exists $RRULE{byday}) {
+        my @byDays;
+
+        foreach my $BYDAY (split ',', $RRULE{byday}) {
+          push @byDays, _BYDAY2byDay(lc $BYDAY);
+        }
+
+        $Recurrence{byDay} = \@byDays if @byDays;
+      }
+
+      if (exists $RRULE{bymonth}) {
+        foreach my $BYMONTH (split ',', $RRULE{bymonth}) {
+          unless ($BYMONTH =~ /^\d+L?$/) {
+            confess "$uid: Invalid recurrence BYMONTH ($BYMONTH, $RRULE{bymonth})";
+          }
+
+          push @{$Recurrence{byMonth}}, "$BYMONTH";
+        }
+      }
+
+      if (exists $RRULE{count}) {
+        if (exists $RRULE{until}) {
+          #confess "$uid: Recurrence COUNT and UNTIL cannot both be set";
+          # seen in the wild: PRODID:-//dmfs.org//mimedir.icalendar//EN
+          delete $RRULE{until};
+        }
+
+        unless ($RRULE{count} =~ /^\d+$/) {
+          confess "$uid: Invalid recurrence COUNT ($RRULE{count})";
+        }
+
+        $Recurrence{count} = int $RRULE{count};
+      }
+
+      if (exists $RRULE{until}) {
+        # rfc5545 3.3.10 - UNTIL must be in DTSTART timezone, but both
+        # google and iCloud store it in Z, so we will too as per rfc2445.
+        my ($Until, $IsAllDay) = $Self->_makeDateObj($RRULE{until}, $StartTimeZone, $StartTimeZone);
+        $Recurrence{until} = $Until->iso8601();
+      }
+
+      # }}}
+
+      # parse generic recurrence properties {{{
+
+      foreach my $Property (keys %RecurrenceProperties) {
+        if (defined $RRULE{$Property}) {
+          foreach my $Value (split ',', $RRULE{$Property}) {
+            my ($Valid, $Min) = $RecurrenceProperties{$Property}{signed}
+              ? ('[-+]?[1-9]\d*', ($RecurrenceProperties{$Property}{max} * -1))
+              : ('\d+', 0);
+
+            unless ($Value =~ /^$Valid$/) {
+              confess "$uid: Invalid recurrence $Property ($Value)";
+            }
+
+            unless (($Value >= $Min) and ($Value <= $RecurrenceProperties{$Property}{max})) {
+              confess "$uid: Recurrence $Property is out of range ($Value)";
+            }
+
+            push @{$Recurrence{$RecurrenceProperties{$Property}{name}}}, int $Value;
+          }
+        }
+      }
+
+      # }}}
+      1;
+    };
+    unless ($ok) {
+      %Recurrence = ();
+      $Self->_error($uid, 'RRULE', $@);
+    }
+  }
+
+  my %Overrides;
+  if (exists $VEvent->{properties}{exdate}) {
+    foreach my $Item (@{$VEvent->{properties}{exdate}}) {
+      foreach my $Date ($Self->_getDateObjMulti($Calendar, $Item, $StartTimeZone)) {
+        $Overrides{$Date->iso8601()} = { excluded => $JSON::true }; # 4.3.3
+      }
+    }
+  }
+
+  if ($VEvent->{properties}{rdate}) {
+    # rdate      = "RDATE" rdtparam ":" rdtval *("," rdtval) CRLF
+    foreach my $Item (@{$VEvent->{properties}{rdate}}) {
+      # a PERIOD's start is the key and its length the patch's
+      # duration (jscalendar-icalendar-29 2.3.33)
+      if (lc($Item->{params}{value}[0] || '') eq 'period') {
+        my $TimeZone = $Self->_getTimeZone($Calendar, $Item);
+        foreach my $Period (split /,/, $Item->{value}) {
+          my ($From, $To) = split m{/}, $Period, 2;
+          my ($Date) = eval { $Self->_makeDateObj($From, $TimeZone, $StartTimeZone) } or next;
+          my $Length;
+          if (defined $To and $To =~ /^[+-]?P/i) {
+            $Length = eval { DateTime::Format::ICal->parse_duration(uc $To) };
+          }
+          elsif (defined $To) {
+            my ($Until) = eval { $Self->_makeDateObj($To, $TimeZone, $StartTimeZone) };
+            $Length = $Until->subtract_datetime($Date) if $Until;
+          }
+          $Overrides{$Date->iso8601()} = ($Length && !$Length->is_negative)
+            ? { duration => $Self->_make_duration($Length) } : {};
+        }
+        next;
+      }
+      foreach my $Date ($Self->_getDateObjMulti($Calendar, $Item, $StartTimeZone)) {
+        $Overrides{$Date->iso8601()} = {};
+      }
+    }
+  }
+
+  # parse alarms {{{
+
+  my %Alerts;
+  foreach my $VAlarm (@{$VEvent->{objects} || []}) {
+    next unless lc $VAlarm->{type} eq 'valarm';
+    # a bad alarm drops only itself (see errors())
+    my $alarmuid;
+    my $ok = eval {
+
+      my %AlarmProperties
+        = map { $_ => $VAlarm->{properties}{$_}[0] }
+            keys %{$VAlarm->{properties}};
+
+      $alarmuid = $AlarmProperties{uid}{value}
+                  || $AlarmProperties{'x-wr-alarmuid'}{value}
+                  || _hexkey($VAlarm, $uid) . '-alarmauto';
+
+      my %Alert;
+      $Alert{'@type'} = 'Alert';
+
+      # ACTION is required (RFC 5545 3.6.6)
+      my $AlarmAction = lc($AlarmProperties{action}{value} // die "VALARM without ACTION\n");
+      return 1 unless $AlarmAction;
+
+      if ($AlarmAction eq 'display' || $AlarmAction eq 'audio') {
+        $Alert{action} = 'display';
+      }
+      elsif ($AlarmAction eq 'email') {
+        $Alert{action} = 'email';
+      }
+      elsif ($AlarmAction eq 'none') {
+        return 1;
+      }
+      else {
+        warn "$uid: UNKNOWN VALARM ACTION $AlarmAction";
+        return 1;
+      }
+
+      if ($AlarmProperties{acknowledged}) {
+        my $date = $Self->_getDateObj($Calendar, $AlarmProperties{acknowledged}, 'UTC');
+        $Alert{acknowledged} = $date->iso8601() . 'Z';
+      }
+
+      my $Trigger = $AlarmProperties{trigger}{value}
+        || return 1;
+
+      my $Related = (lc ($AlarmProperties{trigger}{params}{related}[0] || '') eq 'end')
+        ? 'end'
+        : 'start';
+
+      if ($Trigger =~ m/^[+-]?P/i) {
+        my $Duration = eval { DateTime::Format::ICal->parse_duration(uc $Trigger) }
+          || return 1;
+
+        my ($IsNeg, $OffsetStr);
+        if ($Duration->is_negative()) {
+          $Duration = $Duration->inverse();
+          $IsNeg = 1;
+        }
+        # jscalendarbis-22 3.5.1: on a Task, "end" MUST NOT be used
+        # without a due.  RFC 5545 3.8.6.3 puts such a VTODO's end at
+        # DTSTART + DURATION, so say the same instant relative to start.
+        if ($is_task and $Related eq 'end' and not $Properties{due}{value}) {
+          my $Span = $End->subtract_datetime($Start);
+          $Duration = $IsNeg ? $Span->clone->subtract_duration($Duration)
+                             : $Span->clone->add_duration($Duration);
+          $IsNeg = 0;
+          if ($Duration->is_negative()) {
+            $Duration = $Duration->inverse();
+            $IsNeg = 1;
+          }
+          $Related = 'start';
+        }
+        $OffsetStr = ($IsNeg ? '-' : '') . $Self->_make_duration($Duration);
+        $Alert{trigger} = {
+          '@type'      => 'OffsetTrigger',
+          'offset'     => $OffsetStr,
+          'relativeTo' => $Related,
+        };
+      }
+      else {
+        # Absolute trigger (VALUE=DATE-TIME)
+        my $AlertDate = $Self->_getDateObj($Calendar, $AlarmProperties{trigger}, 'UTC');
+        $Alert{trigger} = {
+          '@type' => 'AbsoluteTrigger',
+          'when'  => $AlertDate->iso8601() . 'Z',
+        };
+      }
+
+      $Alerts{$alarmuid} = \%Alert;
+      1;
+    };
+    $Self->_error($uid, 'VALARM', $@, $alarmuid) unless $ok;
+  }
+
+  # }}}
+
+  # parse attendees {{{
+
+  my %Participants;
+  my %AddrKeys;
+  for my $VProp (@{$VEvent->{properties}{organizer} || []},
+                 @{$VEvent->{properties}{attendee} || []}) {
+    my $jsid = _propJSID($VProp) // next;
+    my $addr = $VProp->{value} // next;
+    $addr =~ s/^mailto://i;
+    $AddrKeys{lc $addr} //= $jsid;
+  }
+  for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
+    $Self->_makeParticipant($Calendar, \%Participants, $VOrganizer, 'owner', \%AddrKeys);
+  }
+  for my $VAttendee (@{$VEvent->{properties}{attendee} || []}) {
+    $Self->_makeParticipant($Calendar, \%Participants, $VAttendee, 'attendee', \%AddrKeys);
+  }
+
+  # }}}
+
+  # parse attachments {{{
+
+  my %Links;
+  foreach my $Attach (@{$VEvent->{properties}{attach} || []}) {
+    next unless $Attach->{value};
+
+    my $uri;
+    my $encoding = lc($Attach->{params}{encoding}[0] || '');
+    if ($encoding eq 'base64' || $encoding eq 'b') {
+      # Binary ATTACH - convert to data: URI
+      my $mime = $Attach->{params}{fmttype}[0] || 'application/octet-stream';
+      $uri = "data:$mime;base64," . $Attach->{value};
+    }
+    elsif (grep { $Attach->{value} =~ m{^$_://} } qw{http https ftp data}) {
+      $uri = $Attach->{value};
+    }
+    else {
+      next;
+    }
+
+    my $filename = $Attach->{params}{filename}[0];
+    my $mime = $Attach->{params}{fmttype}[0];
+    if (not defined $mime and $filename) {
+      $::MimeTypes ||= MIME::Types->new;
+      my $MimeTypeObj = $::MimeTypes->mimeTypeOf($filename);
+      $mime = $MimeTypeObj->type() if $MimeTypeObj;
+    }
+
+    my $size = $Attach->{params}{size}[0];
+
+    $Links{_propJSID($Attach) // sha1_hex(lc $uri)} = {
+      href => $uri,
+      rel => 'enclosure',
+      defined $filename ? (title => $filename) : (),
+      defined $mime ? (contentType => $mime) : (),
+      defined $size ? (size => 0+$size) : (),
+    };
+  }
+  # URL -> a link with rel "describedby", its title in LABEL
+  # (jscalendar-icalendar 2.3.46)
+  foreach my $URL (@{$VEvent->{properties}{url} || []}) {
+    my $uri = $URL->{value};
+    next unless $uri;
+    $Links{_propJSID($URL) // sha1_hex(lc $uri)} = {
+      href => $uri,
+      rel => 'describedby',
+      _linkTitle($URL, 'label'),
+    };
+  }
+  # IMAGE -> a link with rel "icon", its title in FILENAME
+  # (jscalendar-icalendar 2.3.22; LABEL, which this module used to
+  # write, is still read)
+  foreach my $Image (@{$VEvent->{properties}{image} || []}) {
+    my $uri = $Image->{value};
+    next unless $uri;
+    my $size = $Image->{params}{size}[0];
+    my @display = map { lc } grep { length } map { split /,/ } @{$Image->{params}{display} || []};
+    $Links{_propJSID($Image) // sha1_hex(lc $uri)} = {
+      href => $uri,
+      rel => 'icon',
+      defined $Image->{params}{fmttype}[0] ? (contentType => $Image->{params}{fmttype}[0]) : (),
+      (defined $size && $size =~ /^\d+$/) ? (size => 0+$size) : (),
+      @display ? (display => { map { $_ => $JSON::true } @display }) : (),
+      _linkTitle($Image, 'filename', 'label'),
+    };
+  }
+  # LINK with value type URI (jscalendar-icalendar 2.3.24): LINKREL is
+  # the rel, LABEL the title; any other value type does not convert
+  foreach my $Link (@{$VEvent->{properties}{link} || []}) {
+    my $uri = $Link->{value};
+    next unless $uri;
+    next unless lc($Link->{params}{value}[0] // 'uri') eq 'uri';
+    my $rel = $Link->{params}{linkrel}[0];
+    $Links{_propJSID($Link) // sha1_hex(lc $uri)} = {
+      href => $uri,
+      defined $rel && length $rel ? (rel => $rel) : (),
+      defined $Link->{params}{fmttype}[0] ? (contentType => $Link->{params}{fmttype}[0]) : (),
+      _linkTitle($Link, 'label'),
+    };
+  }
+
+  # }}}
+
+  # parse CONFERENCE -> virtualLocations {{{
+
+  my %VirtualLocations;
+  foreach my $Conference (@{$VEvent->{properties}{conference} || []}) {
+    next unless $Conference->{value};
+    my $id = $Conference->{params}{'x-jmap-id'}[0] || sha1_hex($Conference->{value});
+    my %vloc = ('@type' => 'VirtualLocation', uri => $Conference->{value});
+    if ($Conference->{params}{label}) {
+      $vloc{name} = $Conference->{params}{label}[0];
+    }
+    if ($Conference->{params}{feature}) {
+      my @features = map { lc $_ } map { split /,/ } @{$Conference->{params}{feature}};
+      $vloc{features} = { map { $_ => $JSON::true } @features };
+    }
+    $VirtualLocations{$id} = \%vloc;
+  }
+
+  # }}}
+
+  # Parse keywords {{{
+
+  my %keywords;
+  foreach my $Categories (@{$VEvent->{properties}{categories} || []}) {
+    my $val = $Categories->{value};
+    $keywords{$_} = $JSON::true for split ',', $val;
+  }
+  delete $keywords{''}; # just in case it was created by leading or trailing ,
+
+  # }}}
+
+  # Parse relations {{{
+
+  my %relations;
+  foreach my $Relation (@{$VEvent->{properties}{'related-to'} || []}) {
+    my $reltype = $Relation->{params}{reltype}[0] || 'parent';
+    $reltype = lc $reltype if grep { $_ eq lc $reltype } qw(first next parent child);
+    $relations{$Relation->{value}}{'@type'} = 'Relation';
+    $relations{$Relation->{value}}{relation}{$reltype} = $JSON::true;
+  }
+
+  # }}}
+
+  my %Event = ();
+
+  # ==============================================================
+  # 4.1 Metadata
+
+  # 4.1.1 @type (JSCalendar bis uses capitalized names)
+  $Event{'@type'} = $is_task ? 'Task' : 'Event';
+
+  # 4.1.2 uid
+  $Event{uid} = "$uid";
+
+  # 4.1.3 relatedTo
+  $Event{relatedTo} = \%relations if %relations;
+
+  # 4.1.4 prodId
+  $Event{prodId} = $prodid if defined $prodid;
+
+  # 4.1.5 created
+  if ($Properties{created}{value}) {
+    # UTC item
+    my $Date = eval { $Self->_getDateObj($Calendar, $Properties{created}, 'UTC') };
+    $Event{created} = $Date->iso8601() . 'Z' if $Date;
+  }
+
+  # 4.1.6 updated
+  if ($Properties{dtstamp}{value}) {
+    # UTC item
+    my $Date = eval { $Self->_getDateObj($Calendar, $Properties{dtstamp}, 'UTC') };
+    $Event{updated} = $Date->iso8601() . 'Z' if $Date;
+  }
+  if (not $Event{updated} and $Properties{'last-modified'}{value}) {
+    # UTC item
+    my $Date = eval { $Self->_getDateObj($Calendar, $Properties{'last-modified'}, 'UTC') };
+    $Event{updated} = $Date->iso8601() . 'Z' if $Date;
+  }
+  $Event{updated} ||= DateTime->now->iso8601();
+
+  # 4.1.7 sequence
+  $Event{sequence} = int($Properties{sequence}{value}) if $Properties{sequence};
+
+  # 4.1.8 method
+  $Event{method} = $method if $method;
+
+  # ==============================================================
+  # 4.2 What and where
+
+  # 4.2.1 title
+  $Event{title} = $Properties{summary}{value}
+    if ($Properties{summary} and defined $Properties{summary}{value});
+
+  # 4.2.2 description
+  # STYLED-DESCRIPTION overrides DESCRIPTION if present
+  if ($Properties{'styled-description'}{value}) {
+    $Event{description} = $Properties{'styled-description'}{value};
+    $Event{descriptionContentType} = $Properties{'styled-description'}{params}{fmttype}[0] // 'text/html';
+  }
+  elsif (@description) {
+    $Event{description} = join("\n", @description);
+  }
+
+  # 4.2.4 locations
+  if ($Properties{location}{value}) {
+    $Event{locations}{location} = { '@type' => 'Location', name => $Properties{location}{value} };
+  }
+  # X-APPLE-STRUCTURED-LOCATION -> location with coordinates, name, description
+  # Check for Apple structured locations first; if present, skip plain GEO
+  my $has_apple_location = scalar @{$VEvent->{properties}{'x-apple-structured-location'} || []};
+
+  # GEO -> separate location with coordinates (only if no Apple structured location)
+  if (!$has_apple_location && $Properties{geo}{value}) {
+    my ($lat, $lon) = split /;/, $Properties{geo}{value};
+    if (defined $lat && defined $lon) {
+      my $coords = "geo:$lat,$lon";
+      my $locid = $Event{locations} ? 'geo' : 'location';
+      $Event{locations}{$locid} = { '@type' => 'Location', coordinates => $coords };
+    }
+  }
+
+  for my $ASL (@{$VEvent->{properties}{'x-apple-structured-location'} || []}) {
+    next unless $ASL->{value};
+    my %loc = ('@type' => 'Location');
+    if ($ASL->{value} =~ m{^geo:([-\d.]+),([-\d.]+)}) {
+      $loc{coordinates} = $ASL->{value};
+    }
+    my $title = $ASL->{params}{'x-title'}[0];
+    $loc{name} = $title if defined $title && $title ne '';
+    my $address = $ASL->{params}{'x-address'}[0];
+    $loc{description} = $address if defined $address && $address ne '';
+    if (keys %loc > 1) {  # more than just @type
+      my $locid = sha1_hex($ASL->{value} || 'apple-location');
+      $Event{locations}{$locid} = \%loc;
+    }
+  }
+
+  # 4.2.5 virtualLocations
+  $Event{virtualLocations} = \%VirtualLocations if %VirtualLocations;
+
+  # 4.2.6 links
+  $Event{links} = \%Links if %Links;
+
+  # 4.2.7 locale
+  my $language;
+  if ($Properties{description} and $Properties{description}{params}{language}) {
+    $language = $Properties{description}{params}{language}[0];
+  }
+  if ($Properties{summary} and $Properties{summary}{params}{language}) {
+    $language = $Properties{summary}{params}{language}[0];
+  }
+  $Event{locale} = $language if $language;
+
+  # 4.2.8 keywords
+  $Event{keywords} = \%keywords if %keywords;
+
+  # 4.2.9 categories is not supported
+
+  # 4.2.10 color
+  # (one the module cannot read is dropped: it used to die, taking the
+  # whole calendar with it)
+  if ($Properties{color}) {
+    my $color = eval { _fixColor($Properties{color}{value}) };
+    $Event{color} = $color if defined $color;
+  }
+
+  # ==============================================================
+  # 4.3 Recurrence properties
+
+  # 4.3.1 recurrenceRule (a singular object since jscalendarbis-15)
+  if (%Recurrence) {
+    $Recurrence{'@type'} = 'RecurrenceRule';
+    $Event{recurrenceRule} = \%Recurrence;
+  }
+
+  # 4.3.2 recurrenceOverrides
+  $Event{recurrenceOverrides} = \%Overrides if %Overrides;
+
+  # ... special case for recurrence overrides when processing the child ...
+  if ($Properties{'recurrence-id'}{value}) {
+    # in our system it's always in the timezone of the event, but iCloud
+    # returns it in UTC despite the event having a timezone.  Super weird.
+    # Anyway, we need to format it to the StartTimeZone of the parent
+    # event if there is one, and we don't have that yet!
+    $Event{_recurrenceObj} = $Self->_getDateObj($Calendar, $Properties{'recurrence-id'});
+  }
+
+  # ==============================================================
+  # 4.4 Sharing and scheduling properties
+
+  # 4.4.1 priority
+  if ($Properties{priority}{value}) {
+    # default is '0', so truth test is sufficient!
+    $Event{priority} = int($Properties{priority}{value});
+  }
+
+  # 4.4.2 freeBusyStatus
+  if ($Properties{transp}{value}) {
+    $Event{freeBusyStatus} = 'free' if lc($Properties{transp}{value}) eq 'transparent';
+  }
+
+  # 4.4.3 privacy (from CLASS property)
+  if ($Properties{class}{value}) {
+    my $cls = lc($Properties{class}{value});
+    if ($cls eq 'confidential') { $Event{privacy} = 'secret' }
+    # jscalendar-icalendar-29 2.3.7: any other value MUST be private
+    elsif ($cls ne 'public') { $Event{privacy} = 'private' }
+  }
+
+  # 4.4.4 organizerCalendarAddress
+  foreach my $partid (sort keys %Participants) { # later wins
+    next unless $Participants{$partid}{roles}{owner};
+    $Event{organizerCalendarAddress} = $Participants{$partid}{calendarAddress};
+  }
+
+  # sentBy (jscalendarbis-22 3.4.5): the ORGANIZER's SENT-BY
+  # (jscalendar-icalendar-29 2.3.29), which needs an organizer
+  if ($Event{organizerCalendarAddress}) {
+    for my $VOrganizer (@{$VEvent->{properties}{organizer} || []}) {
+      my $SentBy = _sentByAddress($VOrganizer) // next;
+      $Event{sentBy} = $SentBy;
+      last;
+    }
+  }
+
+  # 4.4.5 participants
+  $Event{participants} = \%Participants if %Participants;
+
+  # ==============================================================
+  # 4.5 Alerts
+
+  # 4.5.1 alerts
+  $Event{alerts} = \%Alerts if %Alerts;
+
+  # version (jscalendarbis)
+  $Event{version} = '2.0';
+
+  # 4.6.1 localisations is not supported
+
+  # ==============================================================
+  # 5.1 JSEvent specific properties
+
+  # 5.1.1 start
+  $Event{start} = $Start->iso8601() if ref($Start);
+
+  # 5.1.2 timeZone: not set for a DATE or a floating time (it can no
+  # longer be null, jscalendarbis-22 3.6.1, jscalendar-icalendar-29 2.1.5)
+  $Event{timeZone} = $StartTimeZone if not $IsAllDay and defined $StartTimeZone and length $StartTimeZone;
+
+  # endTimeZone (jscalendarbis): set if end timezone differs from start
+  if (!$IsAllDay && $EndTimeZone && $StartTimeZone && $EndTimeZone ne $StartTimeZone) {
+    $Event{endTimeZone} = $EndTimeZone;
+  }
+
+  # 5.1.3 duration
+  my $duration = $Self->_make_duration($End->subtract_datetime($Start), $IsAllDay);
+  $Event{duration} = $duration if $duration;
+
+  # 5.1.4 showWithoutTime (RFC 8984)
+  $Event{showWithoutTime} = $IsAllDay ? $JSON::true : $JSON::false;
+  # SHOW-WITHOUT-TIME property (for DATE-TIME events shown as all-day)
+  if (!$IsAllDay && $Properties{'show-without-time'}{value}) {
+    my $swt = lc($Properties{'show-without-time'}{value});
+    $Event{showWithoutTime} = $JSON::true if $swt eq 'true' || $swt eq 'yes';
+  }
+
+  # 5.1.5 status
+  if ($Properties{status}{value}) {
+    $Event{status} = lc($Properties{status}{value}) if lc($Properties{status}{value}) ne 'confirmed';
+  }
+
+  # Task-specific properties (VTODO)
+  if ($is_task) {
+    if ($Properties{due}{value}) {
+      my ($Due, $DueTz) = $Self->_getDateObj($Calendar, $Properties{due});
+      $Event{due} = $Due->iso8601();
+    }
+    if (defined $Properties{'percent-complete'}{value}) {
+      $Event{percentComplete} = int($Properties{'percent-complete'}{value});
+    }
+    if ($Properties{'estimated-duration'}{value}) {
+      $Event{estimatedDuration} = uc $Properties{'estimated-duration'}{value};
+    }
+    if ($Properties{completed}{value}) {
+      $Event{progress} = 'completed';
+    }
+    elsif (lc($Properties{status}{value} || '') eq 'in-process') {
+      $Event{progress} = 'in-process';
+    }
+    elsif (lc($Properties{status}{value} || '') eq 'cancelled') {
+      $Event{progress} = 'cancelled';
+    }
+  }
+
+  return \%Event;
 }
 
 # jscalendar-icalendar-29 3.2: DTSTART, DUE and RECURRENCE-ID are DATE
@@ -2073,70 +2150,75 @@ sub _argsToVEvents {
 
   if ($Args->{alerts}) {
     for my $id (sort keys %{$Args->{alerts}}) {
-      my $Alert = $Args->{alerts}{$id};
+      # a bad alert drops only itself (see errors())
+      my $ok = eval {
+        my $Alert = $Args->{alerts}{$id};
 
-      my $trigger = $Alert->{trigger} // {};
-      my $triggerType = $trigger->{'@type'} // 'OffsetTrigger';
-      my $action = $Alert->{action} // 'display';
+        my $trigger = $Alert->{trigger} // {};
+        my $triggerType = $trigger->{'@type'} // 'OffsetTrigger';
+        my $action = $Alert->{action} // 'display';
 
-      my $VAlarm;
-      if ($action eq 'email') {
-        $VAlarm = Data::ICal::Entry::Alarm::Email->new();
-        $VAlarm->add_property(summary => "Event alert: '$Args->{title}'");
-        $VAlarm->add_property(description => "Event alert: '$Args->{title}'");
-        if ($Args->{organizerCalendarAddress}) {
-          $VAlarm->add_property(attendee => $Args->{organizerCalendarAddress});
-        }
-      }
-      else {
-        $VAlarm = Data::ICal::Entry::Alarm::Display->new();
-      }
-
-      if ($triggerType eq 'OffsetTrigger') {
-        my $Offset   = $trigger->{offset} // 'PT0S';
-        my $RelTo    = $trigger->{relativeTo} // 'start';
-        # Offset may have a leading '-' sign (already encoded in the duration string)
-        my $Sign     = ($Offset =~ s/^-//) ? '-' : '';
-        my $Loc1     = $RelTo eq 'end' ? "ends" : "starts";
-        my $Loc2     = $RelTo eq 'end' ? "ended" : "started";
-        my $Minutes  = eval { DateTime::Format::ICal->parse_duration(uc $Offset)->in_units('minutes') } // 0;
-        if ($action ne 'email') {
-          $VAlarm->add_properties(
-            description => (($Sign eq '-')
-              ? "'$Args->{title}' $Loc1 in $Minutes minutes"
-              : "'$Args->{title}' $Loc2 $Minutes minutes ago"),
-          );
-        }
-        $VAlarm->add_property(uid => $id);
-        if ($RelTo eq 'end') {
-          $VAlarm->add_property(trigger => ["${Sign}$Offset", { RELATED => 'END' }]);
+        my $VAlarm;
+        if ($action eq 'email') {
+          $VAlarm = Data::ICal::Entry::Alarm::Email->new();
+          $VAlarm->add_property(summary => "Event alert: '$Args->{title}'");
+          $VAlarm->add_property(description => "Event alert: '$Args->{title}'");
+          if ($Args->{organizerCalendarAddress}) {
+            $VAlarm->add_property(attendee => $Args->{organizerCalendarAddress});
+          }
         }
         else {
-          $VAlarm->add_property(trigger => "${Sign}$Offset");
+          $VAlarm = Data::ICal::Entry::Alarm::Display->new();
         }
-      }
-      elsif ($triggerType eq 'AbsoluteTrigger') {
-        my $When = $trigger->{when} // '';
-        if ($action ne 'email') {
-          $VAlarm->add_properties(
-            description => "Event alert: '$Args->{title}'",
-          );
+
+        if ($triggerType eq 'OffsetTrigger') {
+          my $Offset   = $trigger->{offset} // 'PT0S';
+          my $RelTo    = $trigger->{relativeTo} // 'start';
+          # Offset may have a leading '-' sign (already encoded in the duration string)
+          my $Sign     = ($Offset =~ s/^-//) ? '-' : '';
+          my $Loc1     = $RelTo eq 'end' ? "ends" : "starts";
+          my $Loc2     = $RelTo eq 'end' ? "ended" : "started";
+          my $Minutes  = eval { DateTime::Format::ICal->parse_duration(uc $Offset)->in_units('minutes') } // 0;
+          if ($action ne 'email') {
+            $VAlarm->add_properties(
+              description => (($Sign eq '-')
+                ? "'$Args->{title}' $Loc1 in $Minutes minutes"
+                : "'$Args->{title}' $Loc2 $Minutes minutes ago"),
+            );
+          }
+          $VAlarm->add_property(uid => $id);
+          if ($RelTo eq 'end') {
+            $VAlarm->add_property(trigger => ["${Sign}$Offset", { RELATED => 'END' }]);
+          }
+          else {
+            $VAlarm->add_property(trigger => "${Sign}$Offset");
+          }
         }
-        $VAlarm->add_property(uid => $id);
-        $VAlarm->add_property(trigger => [
-          $Self->_makeZTime($When)->[0],
-          { 'VALUE' => 'DATE-TIME' }
-        ]);
-      }
-      else {
-        confess "Unknown trigger type $triggerType";
-      }
+        elsif ($triggerType eq 'AbsoluteTrigger') {
+          my $When = $trigger->{when} // '';
+          if ($action ne 'email') {
+            $VAlarm->add_properties(
+              description => "Event alert: '$Args->{title}'",
+            );
+          }
+          $VAlarm->add_property(uid => $id);
+          $VAlarm->add_property(trigger => [
+            $Self->_makeZTime($When)->[0],
+            { 'VALUE' => 'DATE-TIME' }
+          ]);
+        }
+        else {
+          confess "Unknown trigger type $triggerType";
+        }
 
-      if ($Alert->{acknowledged}) {
-        $VAlarm->add_property(acknowledged => $Self->_makeZTime($Alert->{acknowledged}));
-      }
+        if ($Alert->{acknowledged}) {
+          $VAlarm->add_property(acknowledged => $Self->_makeZTime($Alert->{acknowledged}));
+        }
 
-      $VEvent->add_entry($VAlarm);
+        $VEvent->add_entry($VAlarm);
+        1;
+      };
+      $Self->_error($Args->{uid}, 'Alert', $@, $id) unless $ok;
     }
   }
 
@@ -2356,6 +2438,8 @@ sub _argsToVCalendar {
   my $Item = shift;
   my %ExtraProp = @_;
 
+  $Self->{_errors} = [];
+
   my $VCalendar = Data::ICal->new();
   my $havepid = 0;
 
@@ -2367,11 +2451,24 @@ sub _argsToVCalendar {
   my @VEvents;
   my %TimeZones;
   foreach my $Args (ref $Item eq 'ARRAY' ? @$Item : $Item) {
+    # each object on its own: one that cannot be written is left out
+    # (and reported by errors()), not the whole calendar
+    my %Zones;
+    my @Converted = eval {
+      die "not a JSCalendar object\n" unless ref $Args eq 'HASH';
+      $Self->_argsToVEvents(\%Zones, $Args);
+    };
+    if (my $err = $@) {
+      my $type = ref $Args eq 'HASH' && ($Args->{'@type'} // '') eq 'Task' ? 'Task' : 'Event';
+      $Self->_error(ref $Args eq 'HASH' ? $Args->{uid} : undef, $type, $err);
+      next;
+    }
+    push @VEvents, @Converted;
+    @TimeZones{keys %Zones} = values %Zones;
     if (not $havepid and $Args->{prodId}) {
       $VCalendar->add_properties('prodid' => $Args->{prodId});
       $havepid = 1;
     }
-    push @VEvents, $Self->_argsToVEvents(\%TimeZones, $Args);
   }
 
   # add timezone parts first
@@ -2639,6 +2736,7 @@ sub vcalendarToEvents {
 
   # Internal caches need to be invalidated on each item read! A bit evil really...
   delete $Self->{_tznamemap};
+  $Self->{_errors} = [];
 
   my %map;
   my %exceptions;

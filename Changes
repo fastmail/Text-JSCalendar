@@ -37,6 +37,16 @@ Revision history for Perl extension Text::JSCalendar
 	  (tools/extract-icalendar-examples.pl).  Known conversion bugs are
 	  TODO tests, each with its cause
 	- MANIFEST lists the tests and test data added since 0.08
+	- one bad component no longer costs the whole calendar.  The reader
+	  converts each VEVENT/VTODO on its own, and each VALARM and RRULE
+	  in it: a component that cannot be converted is dropped (an RRULE
+	  with FREQ=FORTNIGHTLY used to confess, a VALARM without ACTION to
+	  die on lc undef, each taking every event with it).  The writer
+	  likewise writes each object, and each alert, on its own.  What was
+	  dropped is reported by the new errors() method (uid, component,
+	  id, message), reset by each vcalendarToEvents, eventsToVCalendar
+	  or _argsToVCalendar call; their return values are unchanged
+	- add t/isolation.t
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and

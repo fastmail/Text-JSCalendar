@@ -10,6 +10,7 @@ t/api.t
 t/cyrus-caldav.t
 t/icalfiles.t
 t/injection.t
+t/isolation.t
 t/jscalendar-29.t
 t/links.t
 t/normalise.t

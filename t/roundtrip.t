@@ -146,14 +146,23 @@ for my $f (@fixtures) {
   my ($name, $event) = @$f;
   local $TODO = $TODO_A{$name};
   my $snap = $JSON->encode($event);
+  my @dropped;
   my @back = eval {
     my $ical = $jscal->eventsToVCalendar($event);
+    push @dropped, $jscal->errors;
     push @changed_input, $name if $JSON->encode($event) ne $snap;
-    $jscal->vcalendarToEvents($ical);
+    my @e = $jscal->vcalendarToEvents($ical);
+    push @dropped, $jscal->errors;
+    @e;
   };
   if (my $err = $@) {
     fail("A $name round trip");
     diag("died: " . ($err =~ s/\n.*//sr));
+    next;
+  }
+  if (@dropped) {
+    fail("A $name round trip");
+    diag("dropped: " . join('; ', map { "$_->{component} " . ($_->{uid} // '?') . ": $_->{message}" } @dropped));
     next;
   }
   my $in = $JSON->decode($snap);
@@ -188,7 +197,7 @@ sub strip_second {
   }
 }
 
-my $VTODO_NO_DTSTART = 'the reader dies on a VTODO without DTSTART (DTSTART is optional there)';
+my $VTODO_NO_DTSTART = 'the reader drops a VTODO without DTSTART (DTSTART is optional there)';
 my $ALERT_NO_TITLE = 'the writer dies on an alert of an event without a title';
 my %TODO_B = (
   'icalendar/rdate_period.ics'        => 'an RDATE;VALUE=PERIOD patch equal to the master is written as a RECURRENCE-ID instance, which reads back as no override',
@@ -209,15 +218,27 @@ my @ics = map { glob("testdata/$_/*.ics") } qw(. icalendar roundtrip/ical jscale
 for my $file (sort @ics) {
   (my $name = $file) =~ s{^testdata/(?:\./)?}{};
   local $TODO = $TODO_B{$name};
+  my @dropped;
   my ($first, $second) = eval {
     my @first = $jscal->vcalendarToEvents(slurp_utf8($file));
+    push @dropped, $jscal->errors;
     my $snap = $JSON->encode(\@first);   # the writer may touch its input (part C)
-    my @second = $jscal->vcalendarToEvents($jscal->eventsToVCalendar(@first));
+    my $ical = $jscal->eventsToVCalendar(@first);
+    push @dropped, $jscal->errors;
+    my @second = $jscal->vcalendarToEvents($ical);
+    push @dropped, $jscal->errors;
     ($JSON->decode($snap), \@second);
   };
   if (my $err = $@) {
     fail("B $name is stable");
     diag("died: " . ($err =~ s/\n.*//sr));
+    next;
+  }
+  # a component dropped on the way is a failure, even if both sides then
+  # agree (nothing read is trivially stable)
+  if (@dropped) {
+    fail("B $name is stable");
+    diag("dropped: " . join('; ', map { "$_->{component} " . ($_->{uid} // '?') . ": $_->{message}" } @dropped));
     next;
   }
   strip_second($first, $second);
@@ -250,12 +271,14 @@ sub ics { join("\r\n", 'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:x', @_, 'END:VC
 }
 
 {
-  local $TODO = 'one bad RRULE confesses in _getEventsFromVCalendar and loses every event in the calendar';
+  # (it used to confess in _getEventsFromVCalendar and lose every event
+  # in the calendar; now the rule alone is dropped, see t/isolation.t)
   my @e = eval { $jscal->vcalendarToEvents(ics(
     'BEGIN:VEVENT', 'UID:good@example.com', 'DTSTAMP:20250101T000000Z', 'DTSTART:20250101T100000Z', 'END:VEVENT',
     'BEGIN:VEVENT', 'UID:bad@example.com', 'DTSTAMP:20250101T000000Z', 'DTSTART:20250101T100000Z',
     'RRULE:FREQ=FORTNIGHTLY', 'END:VEVENT')) };
-  is_deeply([map { $_->{uid} } @e], ['good@example.com'], 'C a bad RRULE costs only its own event');
+  is_deeply([map { $_->{uid} } @e], ['bad@example.com', 'good@example.com'], 'C a bad RRULE costs no event');
+  ok(!exists $e[0]{recurrenceRule}, 'C ... only the rule');
 }
 
 done_testing;
