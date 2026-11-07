@@ -1,6 +1,6 @@
 Revision history for Perl extension Text::JSCalendar
 
-0.09  unreleased
+0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and
 	  icalendar-jscalendar-extensions-09
 	- participant keys travel in the JSID parameter of ATTENDEE and

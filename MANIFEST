@@ -48,3 +48,7 @@ utils/GenerateTimeZoneModule.pl
 utils/GenerateTimeZonePopulations.pl
 utils/ical2js.pl
 utils/pop.pl
+t/jscalendar-29.t
+t/links.t
+t/participant-delegation.t
+t/participant-jsid.t
