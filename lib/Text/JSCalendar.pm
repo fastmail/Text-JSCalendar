@@ -2928,6 +2928,515 @@ sub vcalendarToEvents {
   return map { $map{$_} } sort keys %map;
 }
 
+=head2 $self->instance($Event, $recurrenceId)
+
+The occurrence of C<$Event> with the given recurrence id (a LocalDateTime
+as used for C<recurrenceOverrides> keys, C<YYYY-MM-DDTHH:MM:SS>), as an
+object of its own: a copy of the master with the override patch for that
+id, if any, applied (PatchObject paths such as
+C<participants/p1/participationStatus> included, as the writer applies
+them), C<recurrenceId> set, C<recurrenceIdTimeZone> set to the master's
+C<timeZone> if it has one, C<start> the patch's if it moves the
+occurrence and the recurrence id otherwise, and C<recurrenceRule> and
+C<recurrenceOverrides> removed.  A patch cannot change the properties an
+occurrence must share with its master (C<uid>, C<@type>,
+C<recurrenceRule>, ...; the same ones the writer ignores).
+
+Returns undef if the occurrence is excluded, or if C<$Event> is a
+synthetic master (see above) and the id is not one of its instances.
+It does not check that the id is an occurrence of the rule: that is
+what C<occurrences> is for.  C<$Event> is not changed.  May be called as
+a class method.
+
+=cut
+
+sub instance {
+  my ($Self, $Event, $recurrenceId) = @_;
+  croak 'instance: not an event' unless ref $Event eq 'HASH';
+  my $rid = _localDateTime($recurrenceId) // croak "instance: invalid recurrenceId";
+
+  my $Overrides = ref $Event->{recurrenceOverrides} eq 'HASH' ? $Event->{recurrenceOverrides} : {};
+  my $Patch = $Overrides->{$rid};
+  $Patch = undef unless ref $Patch eq 'HASH';
+  return undef if $Patch and $Patch->{excluded};
+  return undef if !$Patch and isSyntheticMaster($Event);
+
+  my $Instance = $Self->_maximise($Event, $Patch || {}, $rid);
+  delete $Instance->{excluded};
+  $Instance->{recurrenceId} = $rid;
+  if (defined $Event->{timeZone}) {
+    $Instance->{recurrenceIdTimeZone} = $Event->{timeZone};
+  }
+  else {
+    delete $Instance->{recurrenceIdTimeZone};
+  }
+  return $Instance;
+}
+
+=head2 $self->occurrences($Event, after => $from, before => $to, max => $n)
+
+The recurrence ids of C<$Event> (LocalDateTimes, C<YYYY-MM-DDTHH:MM:SS>,
+the form of C<recurrenceOverrides> keys) that are at or after C<after>
+and before C<before>, in order.  Both bounds are LocalDateTimes in the
+event's own time zone (a trailing C<Z> is ignored, a bare date means its
+midnight) and either may be left out.  These are:
+
+=over
+
+=item * the event's C<start>, which is always the first occurrence
+(jscalendarbis-22 3.3.3.1), and for a C<recurrenceRule> every date-time
+the rule produces from it, with every rule property this module reads:
+C<frequency>, C<interval>, C<firstDayOfWeek>, C<byDay> (with
+C<nthOfPeriod>), C<byMonthDay>, C<byMonth>, C<byYearDay>, C<byWeekNo>,
+C<byHour>, C<byMinute>, C<bySecond>, C<bySetPosition>, C<count>,
+C<until>, and C<skip> (C<rscale> must be C<gregorian>, the default;
+another one dies),
+
+=item * plus every C<recurrenceOverrides> key that is not excluded and
+that the rule does not produce (an added occurrence, iCalendar's RDATE),
+
+=item * minus every key whose patch sets C<excluded>.
+
+=back
+
+For a synthetic master (see above) they are its instances: its override
+keys, minus the excluded ones.
+
+C<max> (default 5000) bounds the number returned, so an unbounded rule
+without C<before> still ends; a rule that stops matching (C<byMonthDay>
+30 in C<byMonth> 2) ends once 400 years pass without an occurrence.
+Returns an empty list for an event without C<start>.  May be called as
+a class method.
+
+=cut
+
+our $MaxOccurrences = 5000;
+
+sub occurrences {
+  my ($Self, $Event, %Opts) = @_;
+  croak 'occurrences: not an event' unless ref $Event eq 'HASH';
+  my $max = $Opts{max} // $MaxOccurrences;
+  croak 'occurrences: max must be a positive integer' unless $max =~ /^\d+$/ and $max > 0;
+  my ($after, $before);
+  if (defined $Opts{after}) {
+    $after = _localDateTime($Opts{after}) // croak "occurrences: invalid after ($Opts{after})";
+  }
+  if (defined $Opts{before}) {
+    $before = _localDateTime($Opts{before}) // croak "occurrences: invalid before ($Opts{before})";
+  }
+  my $inRange = sub {
+    my $rid = shift;
+    return 0 if defined $after and $rid lt $after;
+    return 0 if defined $before and $rid ge $before;
+    return 1;
+  };
+
+  my $Overrides = ref $Event->{recurrenceOverrides} eq 'HASH' ? $Event->{recurrenceOverrides} : {};
+  my (%excluded, @added);
+  foreach my $key (keys %$Overrides) {
+    my $rid = _localDateTime($key) // next;
+    my $Patch = $Overrides->{$key};
+    if (ref $Patch eq 'HASH' and $Patch->{excluded}) { $excluded{$rid} = 1 }
+    else { push @added, $rid }
+  }
+
+  my @found;
+  unless (isSyntheticMaster($Event)) {
+    my $start = _localDateTime($Event->{start}) // return ();
+    my $Rule = $Event->{recurrenceRule};
+    $Rule = undef unless ref $Rule eq 'HASH';
+    my $limit = defined $before ? $before : undef;
+    my $take = sub {
+      my $rid = shift;
+      return 1 if $excluded{$rid} or !$inRange->($rid);
+      push @found, $rid;
+      return @found < $max;
+    };
+    if ($Rule) {
+      _expandRule($Rule, $start, $limit, $take, $after);
+    }
+    elsif (!defined $before or $start lt $before) {
+      $take->($start);
+    }
+  }
+
+  my %seen;
+  my @all = sort grep { !$seen{$_}++ } @found, grep { !$excluded{$_} and $inRange->($_) } @added;
+  splice @all, $max if @all > $max;
+  return @all;
+}
+
+# A LocalDateTime in the canonical form of override keys, or undef.
+# A trailing Z or fraction is dropped; a bare date is its midnight.
+sub _localDateTime {
+  my $value = shift;
+  return undef unless defined $value and not ref $value;
+  return "$1T00:00:00" if $value =~ /^(\d{4}-\d\d-\d\d)$/;
+  return "$1T$2" if $value =~ /^(\d{4}-\d\d-\d\d)T(\d\d:\d\d:\d\d)(?:\.\d+)?Z?$/i;
+  return undef;
+}
+
+# --- recurrence rule expansion (jscalendarbis-22 3.3.3.1) ---------------
+#
+# Days are counted from 1970-01-01 (day 0, a Thursday); weekdays are
+# 0 (mo) to 6 (su).  Everything is local time: recurrence ids are.
+
+my %DayNum = (mo => 0, tu => 1, we => 2, th => 3, fr => 4, sa => 5, su => 6);
+
+sub _isLeap { my $y = shift; return ($y % 4 == 0 && $y % 100 != 0) || $y % 400 == 0 }
+
+sub _daysInMonth {
+  my ($y, $m) = @_;
+  return 29 if $m == 2 and _isLeap($y);
+  return (31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)[$m - 1];
+}
+
+# days from civil and back (H. Hinnant's algorithms)
+sub _dayNumber {
+  my ($y, $m, $d) = @_;
+  $y -= 1 if $m <= 2;
+  my $era = int(($y >= 0 ? $y : $y - 399) / 400);
+  my $yoe = $y - $era * 400;
+  my $doy = int((153 * ($m + ($m > 2 ? -3 : 9)) + 2) / 5) + $d - 1;
+  my $doe = $yoe * 365 + int($yoe / 4) - int($yoe / 100) + $doy;
+  return $era * 146097 + $doe - 719468;
+}
+
+sub _civil {
+  my $z = shift() + 719468;
+  my $era = int(($z >= 0 ? $z : $z - 146096) / 146097);
+  my $doe = $z - $era * 146097;
+  my $yoe = int(($doe - int($doe / 1460) + int($doe / 36524) - int($doe / 146096)) / 365);
+  my $y = $yoe + $era * 400;
+  my $doy = $doe - (365 * $yoe + int($yoe / 4) - int($yoe / 100));
+  my $mp = int((5 * $doy + 2) / 153);
+  my $d = $doy - int((153 * $mp + 2) / 5) + 1;
+  my $m = $mp + ($mp < 10 ? 3 : -9);
+  return ($y + ($m <= 2 ? 1 : 0), $m, $d);
+}
+
+sub _weekday { return (shift() + 3) % 7 }   # day 0 was a Thursday
+
+# The week number (and its year) of a day, weeks starting on $wkst, week
+# 1 being the first with four days in the year; and how many weeks that
+# year has.
+sub _weekNo {
+  my ($day, $wkst) = @_;
+  my $weekStart = $day - ((_weekday($day) - $wkst) % 7);
+  my ($wy) = _civil($weekStart + 3);
+  my $ordinal = $weekStart + 3 - _dayNumber($wy, 1, 1);
+  return (int($ordinal / 7) + 1, $wy);
+}
+
+sub _weeksInYear {
+  my ($y, $wkst) = @_;
+  my ($n) = _weekNo(_dayNumber($y, 12, 28), $wkst);
+  return $n;
+}
+
+sub _list {
+  my $v = shift;
+  return undef unless ref $v eq 'ARRAY' and @$v;
+  return $v;
+}
+
+# Calls $take->($recurrenceId) for each occurrence of $Rule from $start
+# (the start itself first, always), in order, until it returns false,
+# the rule ends, an occurrence reaches $before, or 400 years pass
+# without one.
+sub _expandRule {
+  my ($Rule, $start, $before, $take, $after) = @_;
+
+  my $freq = lc($Rule->{frequency} // '');
+  croak "recurrence frequency ($freq) is not valid" unless $ValidFrequency{$freq};
+  my $rscale = lc($Rule->{rscale} // 'gregorian');
+  croak "recurrence rscale $rscale is not supported" unless $rscale eq 'gregorian';
+  my $skip = lc($Rule->{skip} // 'omit');
+  my $interval = $Rule->{interval} // 1;
+  croak "recurrence interval ($interval) is not valid" unless $interval =~ /^\d+$/ and $interval >= 1;
+  my $wkst = $DayNum{lc($Rule->{firstDayOfWeek} // 'mo')} // croak 'recurrence firstDayOfWeek is not valid';
+  my $count = $Rule->{count};
+  croak "recurrence count ($count) is not valid" if defined $count and $count !~ /^\d+$/;
+  my $until;
+  if (defined $Rule->{until}) {
+    $until = _localDateTime($Rule->{until}) // croak "recurrence until ($Rule->{until}) is not valid";
+  }
+
+  my ($sy, $sm, $sd, $sH, $sM, $sS) = $start =~ /^(\d+)-(\d+)-(\d+)T(\d+):(\d+):(\d+)$/;
+  $_ += 0 for $sy, $sm, $sd, $sH, $sM, $sS;
+  my $startDay = _dayNumber($sy, $sm, $sd);
+
+  # the rule's parts, numbers checked, and those implied by the start
+  my %by;
+  foreach my $name (qw(byMonthDay byYearDay byWeekNo byHour byMinute bySecond bySetPosition)) {
+    my $list = _list($Rule->{$name}) or next;
+    $by{$name} = [ map { croak "recurrence $name ($_) is not valid" unless defined $_ and /^[-+]?\d+$/; 0 + $_ } @$list ];
+  }
+  my %range = (byHour => [0, 23], byMinute => [0, 59], bySecond => [0, 60]);
+  foreach my $name (keys %range) {
+    next unless $by{$name};
+    croak "recurrence $name is out of range"
+      if grep { $_ < $range{$name}[0] or $_ > $range{$name}[1] } @{$by{$name}};
+  }
+  if (my $list = _list($Rule->{byMonth})) {
+    # a leap month ("5L") never matches in the Gregorian calendar
+    $by{byMonth} = { map { (defined $_ and /^(\d+)$/) ? (0 + $1 => 1) : () } @$list };
+  }
+  if (my $list = _list($Rule->{byDay})) {
+    $by{byDay} = [ map {
+      croak 'recurrence byDay is not valid' unless ref $_ eq 'HASH' and defined $_->{day} and exists $DayNum{lc $_->{day}};
+      [ $DayNum{lc $_->{day}}, $_->{nthOfPeriod} ? 0 + $_->{nthOfPeriod} : 0 ];
+    } @$list ];
+  }
+  my $startDow = _weekday($startDay);
+  $by{bySecond} //= [$sS] unless $freq eq 'secondly';
+  $by{byMinute} //= [$sM] unless $freq eq 'secondly' or $freq eq 'minutely';
+  $by{byHour}   //= [$sH] unless $freq eq 'secondly' or $freq eq 'minutely' or $freq eq 'hourly';
+  if ($freq eq 'weekly' and !$by{byDay}) {
+    $by{byDay} = [[$startDow, 0]];
+  }
+  if ($freq eq 'monthly' and !$by{byDay} and !$by{byMonthDay}) {
+    $by{byMonthDay} = [$sd];
+  }
+  if ($freq eq 'yearly' and !$by{byYearDay}) {
+    if (!$by{byMonth} and !$by{byWeekNo} and ($by{byMonthDay} or !$by{byDay})) {
+      $by{byMonth} = { $sm => 1 };
+    }
+    if (!$by{byMonthDay} and !$by{byWeekNo} and !$by{byDay}) {
+      $by{byMonthDay} = [$sd];
+    }
+    if ($by{byWeekNo} and !$by{byMonthDay} and !$by{byDay}) {
+      $by{byDay} = [[$startDow, 0]];
+    }
+  }
+  my $nthInYear = ($freq eq 'yearly' and !$by{byMonth});
+  my %inList = map { $_ => { map { $_ => 1 } @{$by{$_} || []} } } qw(byHour byMinute bySecond);
+
+  # does a (valid) day pass byMonth, byWeekNo, byYearDay, byMonthDay?
+  my $dayMatchesUpToMonthDay = sub {
+    my ($day, $y, $m, $d, $skipMonthDay) = @_;
+    return 0 if $by{byMonth} and !$by{byMonth}{$m};
+    if ($by{byWeekNo}) {
+      my ($wn, $wy) = _weekNo($day, $wkst);
+      my $total = _weeksInYear($wy, $wkst);
+      return 0 unless grep { $_ > 0 ? $_ == $wn : $total + 1 + $_ == $wn } @{$by{byWeekNo}};
+    }
+    if ($by{byYearDay}) {
+      my $yd = $day - _dayNumber($y, 1, 1) + 1;
+      my $diy = _isLeap($y) ? 366 : 365;
+      return 0 unless grep { $_ > 0 ? $_ == $yd : $diy + 1 + $_ == $yd } @{$by{byYearDay}};
+    }
+    if ($by{byMonthDay} and !$skipMonthDay) {
+      my $dim = _daysInMonth($y, $m);
+      return 0 unless grep { $_ > 0 ? $_ == $d : $dim + 1 + $_ == $d } @{$by{byMonthDay}};
+    }
+    return 1;
+  };
+  my $dayMatchesByDay = sub {
+    my ($day, $y, $m, $d) = @_;
+    return 1 unless $by{byDay};
+    my $dow = _weekday($day);
+    foreach my $bd (@{$by{byDay}}) {
+      next unless $bd->[0] == $dow;
+      return 1 unless $bd->[1];
+      my ($pos, $len) = $nthInYear
+        ? ($day - _dayNumber($y, 1, 1) + 1, _isLeap($y) ? 366 : 365)
+        : ($d, _daysInMonth($y, $m));
+      my $n = $bd->[1] > 0 ? int(($pos - 1) / 7) + 1 : -(int(($len - $pos) / 7) + 1);
+      return 1 if $n == $bd->[1];
+    }
+    return 0;
+  };
+
+  # the candidate days of a year or month when skip moves invalid dates
+  # (jscalendarbis-22 3.3.3.1, step 2): byMonthDay is applied to every
+  # month as if it had 31 days, and an invalid date moves
+  my $skipping = ($skip ne 'omit' and $by{byMonthDay} and ($freq eq 'yearly' or $freq eq 'monthly'));
+  my $skipDays = sub {
+    my ($y, @months) = @_;
+    my %days;
+    foreach my $m (@months) {
+      next if $by{byMonth} and !$by{byMonth}{$m};
+      my $dim = _daysInMonth($y, $m);
+      foreach my $v (@{$by{byMonthDay}}) {
+        my $day;
+        if ($v > 0 and $v <= $dim) { $day = _dayNumber($y, $m, $v) }
+        elsif ($v < 0 and $dim + 1 + $v >= 1) { $day = _dayNumber($y, $m, $dim + 1 + $v) }
+        else {
+          # invalid: byWeekNo and byYearDay never match it
+          next if $by{byWeekNo} or $by{byYearDay};
+          if ($v > 0) {
+            $day = $skip eq 'forward' ? _dayNumber($y, $m, $dim) + 1 : _dayNumber($y, $m, $dim);
+          }
+          else {
+            $day = $skip eq 'forward' ? _dayNumber($y, $m, 1) : _dayNumber($y, $m, 1) - 1;
+          }
+          $days{$day} = 1;
+          next;
+        }
+        my (undef, undef, $d) = _civil($day);
+        $days{$day} = 1 if $dayMatchesUpToMonthDay->($day, $y, $m, $d, 1);
+      }
+    }
+    return grep { $dayMatchesByDay->($_, _civil($_)) } sort { $a <=> $b } keys %days;
+  };
+
+  # the days of a period that pass every date filter
+  my $daysOf = sub {
+    my ($first, $last) = @_;
+    my @days;
+    for my $day ($first .. $last) {
+      my ($y, $m, $d) = _civil($day);
+      push @days, $day if $dayMatchesUpToMonthDay->($day, $y, $m, $d) and $dayMatchesByDay->($day, $y, $m, $d);
+    }
+    return @days;
+  };
+
+  my @hours   = sort { $a <=> $b } keys %{$inList{byHour}};
+  my @minutes = sort { $a <=> $b } keys %{$inList{byMinute}};
+  my @seconds = sort { $a <=> $b } keys %{$inList{bySecond}};
+  my $fmt = sub {
+    my ($day, $H, $M, $S) = @_;
+    my ($y, $m, $d) = _civil($day);
+    return sprintf('%04d-%02d-%02dT%02d:%02d:%02d', $y, $m, $d, $H, $M, $S);
+  };
+
+  # the candidates of period $n, in order
+  my $periodStart;   # the first date-time of the period, as a string
+  my $noDays;        # no day of the period passed the date filters
+  my $candidates = sub {
+    my $n = shift;
+    my (@days, @H, @M, @S);
+    @H = @hours; @M = @minutes; @S = @seconds;
+    if ($freq eq 'yearly') {
+      my $y = $sy + $n * $interval;
+      $periodStart = sprintf('%04d-01-01T00:00:00', $y);
+      @days = $skipping ? $skipDays->($y, 1 .. 12)
+                        : $daysOf->(_dayNumber($y, 1, 1), _dayNumber($y, 12, 31));
+    }
+    elsif ($freq eq 'monthly') {
+      my $mi = ($sy * 12 + $sm - 1) + $n * $interval;
+      my ($y, $m) = (int($mi / 12), $mi % 12 + 1);
+      $periodStart = sprintf('%04d-%02d-01T00:00:00', $y, $m);
+      @days = $skipping ? $skipDays->($y, $m)
+                        : $daysOf->(_dayNumber($y, $m, 1), _dayNumber($y, $m, _daysInMonth($y, $m)));
+    }
+    elsif ($freq eq 'weekly') {
+      my $first = $startDay - ((_weekday($startDay) - $wkst) % 7) + 7 * $n * $interval;
+      $periodStart = $fmt->($first, 0, 0, 0);
+      @days = $daysOf->($first, $first + 6);
+    }
+    elsif ($freq eq 'daily') {
+      my $day = $startDay + $n * $interval;
+      $periodStart = $fmt->($day, 0, 0, 0);
+      @days = $daysOf->($day, $day);
+    }
+    else {
+      my $unit = { hourly => 3600, minutely => 60, secondly => 1 }->{$freq};
+      my $t = (($startDay * 24 + $sH) * 60 + $sM) * 60 + $sS;
+      $t -= $t % $unit;
+      $t += $n * $interval * $unit;
+      my $day = int($t / 86400);
+      $day-- if $t < 0 and $t % 86400;
+      my $secs = $t - $day * 86400;
+      my ($H, $M, $S) = (int($secs / 3600), int(($secs % 3600) / 60), $secs % 60);
+      $periodStart = $fmt->($day, $H, $M, $freq eq 'secondly' ? $S : 0);
+      @days = $daysOf->($day, $day);
+      @H = $inList{byHour}{$H} || !%{$inList{byHour}} ? ($H) : ();
+      if ($freq ne 'hourly') {
+        @M = $inList{byMinute}{$M} || !%{$inList{byMinute}} ? ($M) : ();
+      }
+      if ($freq eq 'secondly') {
+        @S = $inList{bySecond}{$S} || !%{$inList{bySecond}} ? ($S) : ();
+      }
+    }
+    $noDays = !@days;
+    my @out;
+    foreach my $day (@days) {
+      foreach my $H (@H) {
+        foreach my $M (@M) {
+          push @out, map { $fmt->($day, $H, $M, $_) } @S;
+        }
+      }
+    }
+    if ($by{bySetPosition}) {
+      my @keep;
+      foreach my $p (@{$by{bySetPosition}}) {
+        my $i = $p > 0 ? $p - 1 : @out + $p;
+        push @keep, $out[$i] if $i >= 0 and $i < @out;
+      }
+      my %u;
+      @out = sort grep { !$u{$_}++ } @keep;
+    }
+    return @out;
+  };
+
+  my $produced = 0;
+  my %seen;
+  my $emit = sub {
+    my $rid = shift;
+    return 1 if $seen{$rid}++;
+    return 0 if defined $until and $rid gt $until;
+    return 0 if defined $before and $rid ge $before;
+    return 0 if defined $count and $produced >= $count;
+    $produced++;
+    return $take->($rid) ? 1 : 0;
+  };
+
+  # the start is always the first occurrence
+  return unless $emit->($start);
+
+  # how many periods may pass without an occurrence: 400 years' worth
+  my $idle = { yearly => 400, monthly => 4800, weekly => 20871, daily => 146097,
+               hourly => 3506328, minutely => 210379680, secondly => 12622780800 }->{$freq};
+  $idle = int($idle / $interval) + 1;
+  my $sinceLast = 0;
+  # a sub-daily rule on a day no date filter lets through skips the day
+  my $subDaily = ($freq eq 'hourly' or $freq eq 'minutely' or $freq eq 'secondly');
+
+  # without a count, the periods before the one holding $after cannot
+  # matter: start there (one early, for a date a skip moved forward)
+  my $n0 = 0;
+  if (defined $after and !defined $count and $after gt $start) {
+    my ($ay, $am, $ad, $aH, $aM, $aS) = map { 0 + $_ } $after =~ /^(\d+)-(\d+)-(\d+)T(\d+):(\d+):(\d+)$/;
+    my $aDay = _dayNumber($ay, $am, $ad);
+    my $steps;
+    if ($freq eq 'yearly') { $steps = ($ay - $sy) }
+    elsif ($freq eq 'monthly') { $steps = ($ay * 12 + $am) - ($sy * 12 + $sm) }
+    elsif ($freq eq 'weekly') { $steps = int(($aDay - $startDay) / 7) }
+    elsif ($freq eq 'daily') { $steps = $aDay - $startDay }
+    else {
+      my $unit = { hourly => 3600, minutely => 60, secondly => 1 }->{$freq};
+      my $secs = ((($aDay - $startDay) * 24 + $aH - $sH) * 60 + $aM - $sM) * 60 + $aS - $sS;
+      $steps = int($secs / $unit);
+    }
+    $n0 = int($steps / $interval) - 1;
+    $n0 = 0 if $n0 < 0;
+  }
+
+  for (my $n = $n0; ; $n++) {
+    my @c = $candidates->($n);
+    return if defined $until and $periodStart gt $until;
+    return if defined $before and $periodStart ge $before;
+    my $any = 0;
+    foreach my $rid (@c) {
+      next if $rid lt $start;
+      $any = 1;
+      return unless $emit->($rid);
+    }
+    if ($any) { $sinceLast = 0 }
+    elsif (++$sinceLast > $idle) { return }
+    elsif ($subDaily and $noDays) {
+      # jump to the last period that starts on this day
+      my $unit = { hourly => 3600, minutely => 60, secondly => 1 }->{$freq};
+      my ($H, $M, $S) = $periodStart =~ /T(\d\d):(\d\d):(\d\d)$/;
+      my $left = int((86400 - ($H * 3600 + $M * 60 + $S) - 1) / ($unit * $interval));
+      $n += $left;
+      $sinceLast += $left;
+    }
+  }
+}
+
 # Order two instances by their RECURRENCE-ID (then DTSTART)
 sub _compareInstances {
   my ($A, $B) = @_;

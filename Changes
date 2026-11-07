@@ -85,6 +85,24 @@ Revision history for Perl extension Text::JSCalendar
 	  against a pattern stringified them in the caller's objects, which
 	  then encoded as JSON strings ("interval": "2")
 	- add t/no-mutation.t
+	- new public API for what consumers had to rebuild themselves:
+	  * occurrences($Event, after => $from, before => $to, max => $n):
+	    the recurrence ids in [after, before), in order: the start
+	    (always the first occurrence), every date-time of the
+	    recurrenceRule (jscalendarbis-22 3.3.3.1, with every rule
+	    property the module reads, firstDayOfWeek, byYearDay, byWeekNo,
+	    bySecond and skip included; rscale must be gregorian), plus
+	    added recurrenceOverrides keys, minus excluded ones.  A rule of
+	    its own, not DateTime::Event::ICal (which, among other things,
+	    loses most occurrences of a weekly rule with an interval and
+	    byMonth); bounded by max (default 5000) and by 400 years
+	    without a match
+	  * instance($Event, $recurrenceId): that occurrence as an object
+	    of its own, the override patch applied with the module's own
+	    PatchObject code (participants/p1/participationStatus and the
+	    like), recurrenceId and recurrenceIdTimeZone set; undef if
+	    excluded
+	- add t/occurrences.t
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and
