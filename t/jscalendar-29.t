@@ -56,4 +56,19 @@ sub event { my ($e) = $jscal->vcalendarToEvents(vevent(@_)); return $e }
   unlike($ical, qr/^SHOW-WITHOUT-TIME/m, 'and no SHOW-WITHOUT-TIME');
 }
 
+# a Task alert MUST NOT be relative to "end" without a due (jscalendarbis-22 3.5.1)
+{
+  my $todo = sub { my ($t) = $jscal->vcalendarToEvents(ics('BEGIN:VTODO', 'UID:todo@example.com',
+    'DTSTAMP:20250101T000000Z', 'DTSTART:20250101T100000Z', @_, 'END:VTODO')); return $t };
+  my $alert = sub { my ($t) = @_; my ($a) = values %{ $t->{alerts} || {} }; return $a->{trigger} };
+  my $alarm = sub { ('BEGIN:VALARM', 'ACTION:DISPLAY', 'DESCRIPTION:x', "TRIGGER;RELATED=END:$_[0]", 'END:VALARM') };
+  is_deeply($alert->($todo->('DURATION:PT2H', $alarm->('-PT15M'))),
+    { '@type' => 'OffsetTrigger', offset => 'PT1H45M', relativeTo => 'start' },
+    'no DUE: 15 minutes before DTSTART + DURATION, relative to start');
+  is_deeply($alert->($todo->($alarm->('-PT15M'))),
+    { '@type' => 'OffsetTrigger', offset => '-PT15M', relativeTo => 'start' },
+    'no DUE and no DURATION: the end is the start');
+  is($alert->($todo->('DUE:20250101T120000Z', $alarm->('-PT15M')))->{relativeTo}, 'end', 'with DUE, end stays');
+}
+
 done_testing;

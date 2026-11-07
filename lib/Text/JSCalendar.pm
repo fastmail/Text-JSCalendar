@@ -1139,6 +1139,20 @@ sub _getEventsFromVCalendar {
             $Duration = $Duration->inverse();
             $IsNeg = 1;
           }
+          # jscalendarbis-22 3.5.1: on a Task, "end" MUST NOT be used
+          # without a due.  RFC 5545 3.8.6.3 puts such a VTODO's end at
+          # DTSTART + DURATION, so say the same instant relative to start.
+          if ($is_task and $Related eq 'end' and not $Properties{due}{value}) {
+            my $Span = $End->subtract_datetime($Start);
+            $Duration = $IsNeg ? $Span->clone->subtract_duration($Duration)
+                               : $Span->clone->add_duration($Duration);
+            $IsNeg = 0;
+            if ($Duration->is_negative()) {
+              $Duration = $Duration->inverse();
+              $IsNeg = 1;
+            }
+            $Related = 'start';
+          }
           $OffsetStr = ($IsNeg ? '-' : '') . $Self->_make_duration($Duration);
           $Alert{trigger} = {
             '@type'      => 'OffsetTrigger',
