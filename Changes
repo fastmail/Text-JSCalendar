@@ -1,6 +1,6 @@
 Revision history for Perl extension Text::JSCalendar
 
-0.10  unreleased
+0.10  2026-11-07
 	- NormaliseEvent (and so CompareEvents) keeps what it does not know
 	  instead of deleting it.  It used to delete every key missing from
 	  its table, so every recurrenceOverrides patch normalised to {}
@@ -103,6 +103,9 @@ Revision history for Perl extension Text::JSCalendar
 	    like), recurrenceId and recurrenceIdTimeZone set; undef if
 	    excluded
 	- add t/occurrences.t
+	- declare Data::ICal as a prerequisite, and stop loading XML::Spice and
+	  URI::Escape, which nothing used (a CPAN install without XML::Spice
+	  failed)
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and

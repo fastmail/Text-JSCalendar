@@ -14,11 +14,9 @@ use DateTime::TimeZone;
 use JSON::XS qw(encode_json);
 use Text::JSCalendar::TimeZones;
 use Text::VCardFast qw(vcard2hash);
-use XML::Spice;
 use MIME::Base64 qw(encode_base64);
 use MIME::Types;
 use Digest::SHA qw(sha1_hex);
-use URI::Escape qw(uri_unescape);
 use Data::Dumper;
 use JSON;
 
@@ -430,11 +428,11 @@ Text::JSCalendar
 
 =head1 VERSION
 
-Version 0.09
+Version 0.10
 
 =cut
 
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 
 =head1 SYNOPSIS
 
