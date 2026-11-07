@@ -1839,7 +1839,8 @@ sub _argsToVEvents {
 
   if ($recurrenceData) {
     my ($recurrenceId, $TopLevel) = @$recurrenceData;
-    $VEvent->add_property('recurrence-id' => $Self->_makeLTime($TimeZones, $recurrenceId, $TopLevel->{timeZone}, $TopLevel->{showWithoutTime}));
+    $VEvent->add_property('recurrence-id' => $Self->_makeLTime($TimeZones, $recurrenceId, $TopLevel->{timeZone}, _writesAsDate($TopLevel)));
+    # (the same DATE-or-not decision as the master's DTSTART, -29 3.2)
   }
 
   # direct copy if properties exist

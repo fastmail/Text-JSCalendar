@@ -115,4 +115,18 @@ sub event { my ($e) = $jscal->vcalendarToEvents(vevent(@_)); return $e }
     ->{recurrenceOverrides}, { '2023-08-05T17:00:00' => {} }, 'a DATE-TIME RDATE is still an empty patch');
 }
 
+# RECURRENCE-ID takes the same form as DTSTART (-29 3.2)
+{
+  my $base = { '@type' => 'Event', uid => 'rid@example.com', title => 'x', duration => 'PT1H',
+    recurrenceRule => { '@type' => 'RecurrenceRule', frequency => 'daily' } };
+  my $ical = unfold($jscal->eventsToVCalendar({ %$base, start => '2025-05-21T08:00:00',
+    timeZone => 'America/Chicago', showWithoutTime => $true,
+    recurrenceOverrides => { '2025-05-22T08:00:00' => { title => 'moved' } } }));
+  like($ical, qr/^RECURRENCE-ID;TZID=America\/Chicago:20250522T080000\r?$/m,
+    'a timed event shown without time: RECURRENCE-ID is a DATE-TIME too');
+  $ical = unfold($jscal->eventsToVCalendar({ %$base, start => '2025-05-21T00:00:00', duration => 'P1D',
+    showWithoutTime => $true, recurrenceOverrides => { '2025-05-22T00:00:00' => { title => 'moved' } } }));
+  like($ical, qr/^RECURRENCE-ID;VALUE=DATE:20250522\r?$/m, 'an all-day event: RECURRENCE-ID is a DATE');
+}
+
 done_testing;
