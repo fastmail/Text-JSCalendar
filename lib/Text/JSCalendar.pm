@@ -2671,17 +2671,21 @@ sub _makeRecurrence {
     confess 'Recurrence frequency not specified';
   }
 
+  # (numbers are copied before they meet a pattern or a join: either
+  # stringifies the value it is given, and that would turn the caller's
+  # 2 into "2" when it next encodes the object as JSON)
   if (defined $Args->{interval}) {
-    unless ($Args->{interval} =~ /^\d+$/) {
-      confess "Invalid recurrence interval ($Args->{interval})";
+    my $interval = $Args->{interval};
+    unless ($interval =~ /^\d+$/) {
+      confess "Invalid recurrence interval ($interval)";
     }
 
-    if ($Args->{interval} == 0) {
-      confess "Recurrence interval is out of range ($Args->{interval})";
+    if ($interval == 0) {
+      confess "Recurrence interval is out of range ($interval)";
     }
 
-    if ($Args->{interval} > 1) {
-      $Recurrence{INTERVAL} = $Args->{interval};
+    if ($interval > 1) {
+      $Recurrence{INTERVAL} = $interval;
     }
   }
 
@@ -2718,7 +2722,8 @@ sub _makeRecurrence {
 
     my @BYMONTHS;
 
-    foreach my $byMonth (@{$Args->{byMonth}}) {
+    foreach my $byMonthArg (@{$Args->{byMonth}}) {
+      my $byMonth = $byMonthArg;
       unless ($byMonth =~ /^(\d+)L?$/i) {
         confess "Recurrence byMonth is not a number with optional L ($byMonth)";
       }
@@ -2739,11 +2744,12 @@ sub _makeRecurrence {
       confess 'Recurrence count and until cannot both be set';
     }
 
-    unless ($Args->{count} =~ /^\d+$/) {
-      confess "Invalid recurrence count ($Args->{count})";
+    my $count = $Args->{count};
+    unless ($count =~ /^\d+$/) {
+      confess "Invalid recurrence count ($count)";
     }
 
-    $Recurrence{COUNT} = $Args->{count};
+    $Recurrence{COUNT} = $count;
   }
 
   if ($Args->{until}) {
@@ -2783,7 +2789,8 @@ sub _makeRecurrence {
 
       my @Values;
 
-      foreach my $Value (@{$Args->{$Name}}) {
+      foreach my $ValueArg (@{$Args->{$Name}}) {
+        my $Value = $ValueArg;
         my ($Valid, $Min) = $RecurrenceProperties{$Property}{signed}
           ? ('[-+]?[1-9]\d*', ($RecurrenceProperties{$Property}{max} * -1))
           : ('\d+', 0);

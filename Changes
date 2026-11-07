@@ -80,6 +80,11 @@ Revision history for Perl extension Text::JSCalendar
 	  it starts at its earliest instance, not at whichever came first
 	  in the file, so that it reads back the same
 	- add t/synthetic-master.t
+	- eventsToVCalendar (and _argsToVCalendar) no longer changes its
+	  input: matching recurrenceRule's interval, count and byX numbers
+	  against a pattern stringified them in the caller's objects, which
+	  then encoded as JSON strings ("interval": "2")
+	- add t/no-mutation.t
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and

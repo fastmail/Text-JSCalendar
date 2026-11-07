@@ -229,12 +229,13 @@ for my $file (sort @ics) {
   my ($first, $second) = eval {
     my @first = $jscal->vcalendarToEvents(slurp_utf8($file));
     push @dropped, $jscal->errors;
-    my $snap = $JSON->encode(\@first);   # the writer may touch its input (part C)
+    my $snap = $JSON->encode(\@first);
     my $ical = $jscal->eventsToVCalendar(@first);
     push @dropped, $jscal->errors;
     my @second = $jscal->vcalendarToEvents($ical);
     push @dropped, $jscal->errors;
-    ($JSON->decode($snap), \@second);
+    die "eventsToVCalendar changed its input\n" if $JSON->encode(\@first) ne $snap;
+    (\@first, \@second);
   };
   if (my $err = $@) {
     fail("B $name is stable");
@@ -255,10 +256,9 @@ for my $file (sort @ics) {
 # ---------------------------------------------------------------------------
 # C. Known bugs that A and B do not reach
 
-{
-  local $TODO = 'the writer stringifies numbers in its input (count, interval, byX) by matching and joining them in place';
-  is_deeply(\@changed_input, [], 'C eventsToVCalendar leaves its input alone');
-}
+# (the writer used to stringify count, interval and byX numbers in its
+# input by matching them in place; t/no-mutation.t has the details)
+is_deeply(\@changed_input, [], 'C eventsToVCalendar leaves its input alone');
 
 {
   local $TODO = 'the reader gives every VTODO a duration (PT0S without DTEND); duration is an Event property';

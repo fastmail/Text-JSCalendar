@@ -13,6 +13,7 @@ t/injection.t
 t/isolation.t
 t/jscalendar-29.t
 t/links.t
+t/no-mutation.t
 t/normalise.t
 t/override-toplevel.t
 t/participant-delegation.t
