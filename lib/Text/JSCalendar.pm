@@ -1099,6 +1099,26 @@ sub _getEventsFromVCalendar {
       if ($VEvent->{properties}{rdate}) {
         # rdate      = "RDATE" rdtparam ":" rdtval *("," rdtval) CRLF
         foreach my $Item (@{$VEvent->{properties}{rdate}}) {
+          # a PERIOD's start is the key and its length the patch's
+          # duration (jscalendar-icalendar-29 2.3.33)
+          if (lc($Item->{params}{value}[0] || '') eq 'period') {
+            my $TimeZone = $Self->_getTimeZone($Calendar, $Item);
+            foreach my $Period (split /,/, $Item->{value}) {
+              my ($From, $To) = split m{/}, $Period, 2;
+              my ($Date) = eval { $Self->_makeDateObj($From, $TimeZone, $StartTimeZone) } or next;
+              my $Length;
+              if (defined $To and $To =~ /^[+-]?P/i) {
+                $Length = eval { DateTime::Format::ICal->parse_duration(uc $To) };
+              }
+              elsif (defined $To) {
+                my ($Until) = eval { $Self->_makeDateObj($To, $TimeZone, $StartTimeZone) };
+                $Length = $Until->subtract_datetime($Date) if $Until;
+              }
+              $Overrides{$Date->iso8601()} = ($Length && !$Length->is_negative)
+                ? { duration => $Self->_make_duration($Length) } : {};
+            }
+            next;
+          }
           foreach my $Date ($Self->_getDateObjMulti($Calendar, $Item, $StartTimeZone)) {
             $Overrides{$Date->iso8601()} = {};
           }

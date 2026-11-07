@@ -104,4 +104,15 @@ sub event { my ($e) = $jscal->vcalendarToEvents(vevent(@_)); return $e }
     'a CSS color with no iCalendar form is not written');
 }
 
+# RDATE;VALUE=PERIOD: the start is the key, the length the duration
+# (jscalendar-icalendar-29 2.3.33, the spec's example)
+{
+  my $e = event('DTSTART:20230101T130000Z', 'DURATION:PT1H', 'RRULE:FREQ=MONTHLY',
+    'RDATE;VALUE=PERIOD:20231223T150000Z/PT2H,20231224T150000Z/20231224T153000Z');
+  is_deeply($e->{recurrenceOverrides}{'2023-12-23T15:00:00'}, { duration => 'PT2H' }, 'start/duration');
+  is_deeply($e->{recurrenceOverrides}{'2023-12-24T15:00:00'}, { duration => 'PT30M' }, 'start/end');
+  is_deeply(event('DTSTART:20230101T130000Z', 'RRULE:FREQ=MONTHLY', 'RDATE:20230805T170000Z')
+    ->{recurrenceOverrides}, { '2023-08-05T17:00:00' => {} }, 'a DATE-TIME RDATE is still an empty patch');
+}
+
 done_testing;
