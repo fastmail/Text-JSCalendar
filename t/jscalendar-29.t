@@ -88,4 +88,20 @@ sub event { my ($e) = $jscal->vcalendarToEvents(vevent(@_)); return $e }
   ok(!exists event('DTSTART:20250101T100000Z')->{sentBy}, 'no organizer, no sentBy');
 }
 
+# COLOR (icalendar-jscalendar-extensions-09 2.2)
+{
+  my $e;
+  ok(eval { $e = event('DTSTART:20250101T100000Z', 'SUMMARY:still here', 'COLOR:not-a-colour'); 1 },
+     'an unreadable COLOR does not kill the parse');
+  is($e->{title}, 'still here', 'the event is read');
+  ok(!exists $e->{color}, 'without the color');
+  is(event('DTSTART:20250101T100000Z', 'COLOR:turquoise')->{color}, 'turquoise', 'a CSS3 name');
+  is(event('DTSTART:20250101T100000Z', 'COLOR:#00ff00')->{color}, '#00FF00', 'a hex value');
+  ok(!exists event('DTSTART:20250101T100000Z', 'COLOR:#abcde')->{color}, 'five hex digits are not a color');
+  my $base = { '@type' => 'Event', uid => 'c@example.com', title => 'x', start => '2025-01-01T10:00:00' };
+  like(unfold($jscal->eventsToVCalendar({ %$base, color => '#0f0' })), qr/^COLOR:#00FF00\r?$/m, 'written as six-digit hex');
+  unlike(unfold($jscal->eventsToVCalendar({ %$base, color => 'rgb(1,2,3)' })), qr/^COLOR/m,
+    'a CSS color with no iCalendar form is not written');
+}
+
 done_testing;

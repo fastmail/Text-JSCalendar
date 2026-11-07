@@ -485,7 +485,7 @@ sub _fixColor {
     return uc(substr($color,0,7));
   }
 
-  confess("invalid color") unless $color =~ m/^\s*(\#[a-f0-9]{3,8})\s*$/;
+  confess("invalid color: $color");   # e.g. five or seven hex digits
 }
 
 sub _BYDAY2byDay {
@@ -1456,7 +1456,12 @@ sub _getEventsFromVCalendar {
       # 4.2.9 categories is not supported
 
       # 4.2.10 color
-      $Event{color} = _fixColor($Properties{color}{value}) if $Properties{color};
+      # (one the module cannot read is dropped: it used to die, taking the
+      # whole calendar with it)
+      if ($Properties{color}) {
+        my $color = eval { _fixColor($Properties{color}{value}) };
+        $Event{color} = $color if defined $color;
+      }
 
       # ==============================================================
       # 4.3 Recurrence properties
@@ -1851,8 +1856,11 @@ sub _argsToVEvents {
   }
 
   # color
-  if ($Args->{color}) {
-    $VEvent->add_property('color' => $Args->{color});
+  # COLOR is a CSS3 color name or a six-digit hex value (icalendar-
+  # jscalendar-extensions-09 2.2); any other CSS color has no iCalendar form
+  my $Color = $Args->{color} ? eval { _fixColor($Args->{color}) } : undef;
+  if (defined $Color) {
+    $VEvent->add_property('color' => $Color);
   }
 
   # dates in UTC - stored in UTC
