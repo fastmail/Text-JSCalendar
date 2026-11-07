@@ -1,5 +1,35 @@
 Revision history for Perl extension Text::JSCalendar
 
+0.10  unreleased
+	- NormaliseEvent (and so CompareEvents) keeps what it does not know
+	  instead of deleting it.  It used to delete every key missing from
+	  its table, so every recurrenceOverrides patch normalised to {}
+	  ({"excluded":true} compared equal to an RDATE), every alert trigger
+	  to {} (any two alert offsets compared equal), and every @type was
+	  stripped (an Event compared equal to a Task).  Now:
+	  * unknown keys are kept, at every level
+	  * override patches keep their contents; a patch value at a known
+	    object path (participants/p1, alerts/a1/trigger, locations, ...)
+	    is normalised as that object, and a patched value is never
+	    dropped for being the default, since in a patch it overrides
+	    the master
+	  * an OffsetTrigger drops relativeTo "start" and an implied @type;
+	    an AbsoluteTrigger or unknown trigger is kept whole
+	  * @type is dropped only where the position implies it (Location,
+	    Participant, Alert, NDay, ...); the Event or Task keeps it
+	  * defaults follow jscalendarbis-22: status "confirmed", duration
+	    "PT0S", descriptionContentType "text/plain", interval 1, and
+	    scheduleAgent "server" (RFC 8984); participant kind has no
+	    default, so "individual" no longer equals an unset kind
+	  * a JSON false is now dropped where false is the default
+	    (showWithoutTime, expectReply); it used to be kept because
+	    JSON booleans are references
+	  * a null map or array is dropped as before, but a malformed
+	    value (a map that is not an object) is kept rather than dropped
+	- t/icalfiles.t marks two round trips TODO that the old
+	  NormaliseEvent hid (override patches lost on the way back)
+	- add t/normalise.t
+
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and
 	  icalendar-jscalendar-extensions-09

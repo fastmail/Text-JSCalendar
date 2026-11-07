@@ -61,6 +61,12 @@ BEGIN {
   %ValidDay = map { $_ => 1 } qw(su mo tu we th fr sa);
   %ValidFrequency = map { $_ => 1 } qw(yearly monthly weekly daily hourly minutely secondly);
 
+  # Property name => [container, type, required, default], per object
+  # type (the key "" is the Event or Task itself).  container is 0 for a
+  # single value, 1 for an array, 2 for an Id- or String-keyed map; type
+  # "object" recurses into the table of the same name and "patch" into
+  # a PatchObject.  Defaults are jscalendarbis-22 (or RFC 8984 for the
+  # properties -22 reserved); only NormaliseEvent reads this table.
   %EventKeys = (
     '' => {
       uid                  => [0, 'string',    1, undef],
@@ -74,7 +80,7 @@ BEGIN {
       method               => [0, 'string',    0, undef],
       title                => [0, 'string',    0, ''],
       description          => [0, 'string',    0, ''],
-      descriptionContentType => [0, 'string',  0, undef],
+      descriptionContentType => [0, 'string',  0, "text/plain"],   # jscalendarbis-22 3.2.3
       links                => [2, 'object',    0, undef],
       locale               => [0, 'string',    0, undef],
       locations            => [2, 'object',    0, undef],
@@ -83,12 +89,12 @@ BEGIN {
       showWithoutTime      => [0, 'bool',      0, $JSON::false],
       start                => [0, 'localdate', 1, undef],
       timeZone             => [0, 'timezone',  0, undef],
-      duration             => [0, 'duration',  0, undef],
+      duration             => [0, 'duration',  0, "PT0S"],    # jscalendarbis-22 4.1.2
       recurrenceRule          => [0, 'object',    0, undef],
       recurrenceOverrides     => [2, 'patch',     0, undef],
       recurrenceId         => [0, 'localdate', 0, undef],
       recurrenceIdTimeZone => [0, 'timezone',  0, undef],
-      status               => [0, 'string',    0, undef],
+      status               => [0, 'string',    0, "confirmed"], # jscalendarbis-22 4.1.4
       freeBusyStatus       => [0, 'string',    0, 'busy'],
       privacy              => [0, 'string',    0, 'public'],
       priority             => [0, 'number',    0, 0],
@@ -125,7 +131,7 @@ BEGIN {
     },
     recurrenceRule => {
       frequency            => [0, 'string',    1, undef],
-      interval             => [0, 'number',    0, undef],
+      interval             => [0, 'number',    0, 1],         # jscalendarbis-22 3.3.3
       rscale               => [0, 'string',    0, 'gregorian'],
       skip                 => [0, 'string',    0, 'omit'],
       firstDayOfWeek       => [0, 'string',    0, 'mo'],
@@ -152,12 +158,12 @@ BEGIN {
       name                 => [0, 'string',    1, undef],
       email                => [0, 'string',    1, undef],
       calendarAddress      => [0, 'string',    0, undef],
-      kind                 => [0, 'string',    0, 'individual'],
+      kind                 => [0, 'string',    0, undef],     # no default (jscalendarbis-22 3.4.6)
       roles                => [2, 'bool',      1, undef],
       locationId           => [0, 'string',    0, undef],
       participationStatus  => [0, 'string',    0, 'needs-action'],
       expectReply          => [0, 'bool',      0, $JSON::false],
-      scheduleAgent        => [0, 'string',    0, undef],
+      scheduleAgent        => [0, 'string',    0, "server"],    # RFC 8984 4.4.6
       scheduleSequence     => [0, 'number',    0, 0],
       scheduleUpdated      => [0, 'utcdate',   0, undef],
       scheduleStatus       => [1, 'string',    0, undef],
@@ -177,6 +183,13 @@ BEGIN {
       trigger              => [0, 'object',    1, undef],
       acknowledged         => [0, 'string',    0, undef],
       action               => [0, 'string',    0, 'display'],
+    },
+    # the Alert trigger: an OffsetTrigger when @type is unset or
+    # "OffsetTrigger" (its defaultType, jscalendarbis-22 3.5.1); any other
+    # @type is kept as it is
+    trigger => {
+      offset               => [0, 'string',    1, undef],
+      relativeTo           => [0, 'string',    0, 'start'],
     },
   );
 
@@ -772,11 +785,40 @@ sub _make_duration {
   return join ('', @bits);
 }
 
-=head2 $NewEvent = Net::CalDAVTalk->NormaliseEvent($Event);
+=head2 $NewEvent = Text::JSCalendar->NormaliseEvent($Event);
 
-Doesn't change the original event, but removes any keys which are the same as their default value
+Returns a copy of the event (the original is not changed) in a canonical
+form for comparison: every property whose value is its default
+(jscalendarbis-22, or RFC 8984 for the properties -22 reserved) is
+removed, and so is an C<@type> that only repeats the type its position
+already implies.  Empty maps and arrays are removed.  Everything else is
+kept as it is: a property this module does not know, the contents of a
+C<recurrenceOverrides> patch, and the C<@type> of the Event or Task and of
+any trigger that is not an OffsetTrigger.
+
+Inside a recurrence override, a patch whose path names a known object
+(C<participants/p1>, C<alerts/a1/trigger>, C<locations>) has that object
+normalised the same way.  A patched value is never removed for being the
+default: in a patch it overrides the master, so C<"status": "confirmed">
+says something that C<{}> does not.
 
 =cut
+
+# The @type an object may leave out because its position implies it
+# (jscalendarbis-22 1.4.4).  The Event or Task itself is absent here: there
+# @type says which of the two it is.  For a trigger this is the defaultType
+# (3.5.1); an AbsoluteTrigger or unknown trigger keeps its @type.
+my %ImpliedType = (
+  links            => 'Link',
+  locations        => 'Location',
+  virtualLocations => 'VirtualLocation',
+  recurrenceRule   => 'RecurrenceRule',
+  byDay            => 'NDay',
+  relatedTo        => 'Relation',
+  participants     => 'Participant',
+  alerts           => 'Alert',
+  trigger          => 'OffsetTrigger',
+);
 
 sub NormaliseEvent {
   my ($class, $Event, $Root) = @_;
@@ -785,82 +827,150 @@ sub NormaliseEvent {
 
   my %Copy = %$Event;
 
-  # XXX: patches need to be normalised as well...
-  my $Spec = $EventKeys{$Root};
-  foreach my $key (keys %$Event) {
-    delete $Copy{$key} unless $Spec->{$key};
+  if (exists $Copy{'@type'} and defined $ImpliedType{$Root}
+      and _safeeq($Copy{'@type'}, $ImpliedType{$Root})) {
+    delete $Copy{'@type'};
   }
+
+  # An AbsoluteTrigger or an unknown trigger: nothing below applies to it
+  # (relativeTo's default is the OffsetTrigger's), so keep it as it is.
+  return \%Copy if $Root eq 'trigger' and exists $Copy{'@type'};
+
+  # Only the keys the table knows are normalised; any other key is kept.
+  # (This used to delete every key not in the table, which wiped the
+  # contents of override patches and triggers, and every @type.)
+  my $Spec = $EventKeys{$Root} || {};
   foreach my $key (sort keys %$Spec) {
-    # remove if it's the default
-    if ($Spec->{$key}[0] == 2) {
-      # idmap of type
-      my $Item = delete $Copy{$key};
-      next unless ref($Item) eq 'HASH';
-      next unless keys %$Item;
-      my %new;
-      foreach my $id (keys %$Item) {
-        if ($Spec->{$key}[1] eq 'object') {
-          next unless ref($Item->{$id}) eq 'HASH';
-          $new{$id} = $class->NormaliseEvent($Item->{$id}, $key);
-        }
-        elsif ($Spec->{$key}[1] eq 'patch') {
-          next unless ref($Item->{$id}) eq 'HASH';
-          # XXX - handle keys?  Tricky
-          $new{$id} = $class->NormaliseEvent($Item->{$id}, $key);
-        }
-        else {
-          $new{$id} = $Item->{$id};
-        }
-      }
-      $Copy{$key} = \%new;
-    }
-    elsif ($Spec->{$key}[0] == 1) {
-      my $Item = delete $Copy{$key};
-      next unless ref($Item) eq 'ARRAY';
-      next unless @$Item;
-      my @new;
-      foreach my $one (@$Item) {
-        if ($Spec->{$key}[1] eq 'object') {
-          next unless ref($one) eq 'HASH';
-          push @new, $class->NormaliseEvent($one, $key);
-        }
-        elsif ($Spec->{$key}[1] eq 'patch') {
-          next unless ref($one) eq 'HASH';
-          # XXX - handle keys?  Tricky
-          push @new, $class->NormaliseEvent($one, $key);
-        }
-        else {
-          push @new, $one;
-        }
-      }
-      $Copy{$key} = \@new;
-    }
-    else {
-      if ($Spec->{$key}[1] eq 'object') {
-        next unless ref($Copy{$key}) eq 'HASH';
-        $Copy{$key} = $class->NormaliseEvent($Copy{$key}, $key);
-      }
-      elsif ($Spec->{$key}[1] eq 'bool') {
-        next if ref($Copy{$key});
-        delete $Copy{$key} if !!$Spec->{$key}[3] == !!$Copy{$key};
-      }
-      elsif ($Spec->{$key}[1] eq 'mailto') {
-        next if ref($Copy{$key});
-        $Copy{$key} = lc $Copy{$key} if $Copy{$key};
-      }
-      else {
-        next if ref($Copy{$key});
-        delete $Copy{$key} if _safeeq($Spec->{$key}[3], $Copy{$key});
-      }
-    }
+    next unless exists $Copy{$key};
+    my ($keep, $value) = $class->_normaliseProp($Spec->{$key}, $key, $Copy{$key});
+    if ($keep) { $Copy{$key} = $value }
+    else       { delete $Copy{$key} }
   }
 
   return \%Copy;
 }
 
-=head2 Net::CalDAVTalk->CompareEvents($Event1, $Event2);
+# Normalise one property value under its %EventKeys entry.  Returns
+# (1, $value) to keep it, or () to drop it as default or empty.
+sub _normaliseProp {
+  my ($class, $entry, $key, $value) = @_;
+  my ($container, $type, undef, $default) = @$entry;
 
-Returns true if the events are identical
+  if ($container) {
+    # a map or array: null and empty are both "not set"
+    return () unless defined $value;
+    my @new = $class->_normaliseContainer($entry, $key, $value);
+    return @new ? (1, $new[0]) : ();
+  }
+
+  if ($type eq 'object') {
+    return (1, $value) unless ref($value) eq 'HASH';
+    return (1, $class->NormaliseEvent($value, $key));
+  }
+  # not the shape we expect: keep it (a JSON boolean is a scalar here)
+  return (1, $value) if ref($value) and not JSON::is_bool($value);
+  if ($type eq 'bool') {
+    return () if !!$default == !!$value;
+    return (1, $value);
+  }
+  if ($type eq 'mailto') {
+    return (1, $value ? lc $value : $value);
+  }
+  return () if _safeeq($default, $value);
+  return (1, $value);
+}
+
+# The members of a map (container 2) or array (container 1).  An empty
+# one is dropped (()), a malformed one kept as it is.
+sub _normaliseContainer {
+  my ($class, $entry, $key, $value, $keepEmpty) = @_;
+  my ($container) = @$entry;
+
+  if ($container == 2) {
+    return $value unless ref($value) eq 'HASH';
+    return $value if !%$value and $keepEmpty;
+    return () unless %$value;
+    my %new = map { $_ => $class->_normaliseMember($entry, $key, $value->{$_}) } keys %$value;
+    return \%new;
+  }
+
+  return $value unless ref($value) eq 'ARRAY';
+  return $value if !@$value and $keepEmpty;
+  return () unless @$value;
+  return [ map { $class->_normaliseMember($entry, $key, $_) } @$value ];
+}
+
+# One member of a map or array: an object or a patch is normalised, any
+# other value (a boolean in a set, a string) is kept.
+sub _normaliseMember {
+  my ($class, $entry, $key, $value) = @_;
+  my $type = $entry->[1];
+  return $value unless ref($value) eq 'HASH';
+  return $class->NormaliseEvent($value, $key) if $type eq 'object';
+  return $class->_normalisePatch($value) if $type eq 'patch';
+  return $value;
+}
+
+# A PatchObject (jscalendarbis-22 1.4.9).  Each path that resolves to a
+# known object position has its value normalised as that object; a value
+# is never dropped (a patch setting a default overrides the master), and
+# a path that does not resolve is kept untouched.
+sub _normalisePatch {
+  my ($class, $Patch) = @_;
+
+  my %new;
+  foreach my $path (keys %$Patch) {
+    my $value = $Patch->{$path};
+    my ($where, $entry, $key) = _patchTarget($path);
+    if (!$where or ref($value) ne 'HASH' && ref($value) ne 'ARRAY') {
+      $new{$path} = $value;
+    }
+    elsif ($where eq 'member') {
+      # participants/p1, byDay/0: one object of the map or array
+      $new{$path} = $entry->[1] eq 'object'
+        ? $class->_normaliseMember($entry, $key, $value) : $value;
+    }
+    elsif ($entry->[0]) {
+      # a whole map or array: an empty one is still a patch
+      $new{$path} = $class->_normaliseContainer($entry, $key, $value, 1);
+    }
+    elsif ($entry->[1] eq 'object' and ref($value) eq 'HASH') {
+      $new{$path} = $class->NormaliseEvent($value, $key);
+    }
+    else {
+      $new{$path} = $value;
+    }
+  }
+
+  return \%new;
+}
+
+# Where a patch path points in %EventKeys: ('prop', $entry, $name) for a
+# property, ('member', $entry, $name) for one member of a map or array
+# property, or () when it is not a position the table describes.
+sub _patchTarget {
+  my $path = shift;
+  my @segs = map { _unquotekey($_) } split m{/}, $path, -1;
+  my $table = '';
+  while (@segs) {
+    my $name = shift @segs;
+    my $entry = ($EventKeys{$table} || {})->{$name} or return ();
+    return ('prop', $entry, $name) unless @segs;
+    if ($entry->[0]) {
+      shift @segs;   # the map key or array index
+      return ('member', $entry, $name) unless @segs;
+    }
+    # deeper in: only into an object with a table of its own
+    return () unless $entry->[1] eq 'object' and $EventKeys{$name};
+    $table = $name;
+  }
+  return ();
+}
+
+=head2 Text::JSCalendar->CompareEvents($Event1, $Event2);
+
+Returns true if the events are the same once normalised (see
+C<NormaliseEvent>).
 
 =cut
 
