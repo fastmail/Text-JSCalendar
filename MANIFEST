@@ -18,6 +18,7 @@ t/override-toplevel.t
 t/participant-delegation.t
 t/participant-jsid.t
 t/participants.t
+t/side-effects.t
 t/roundtrip.t
 testdata/alert.ics
 testdata/alert.je

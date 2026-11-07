@@ -47,6 +47,25 @@ Revision history for Perl extension Text::JSCalendar
 	  id, message), reset by each vcalendarToEvents, eventsToVCalendar
 	  or _argsToVCalendar call; their return values are unchanged
 	- add t/isolation.t
+	- no process-wide side effects:
+	  * loading the module no longer replaces $SIG{__WARN__} for the
+	    whole process; the Data::ICal "Unknown property" carps are
+	    caught only while the module itself is writing
+	  * the module uses plain warnings, not FATAL => 'all' (a warning
+	    in it, such as an alert of an untitled event, killed the
+	    caller); the warnings that then showed are fixed: an untitled
+	    event's alarm has a DESCRIPTION again, a SEQUENCE, PRIORITY,
+	    PERCENT-COMPLETE or SIZE that is not an integer is ignored
+	  * the MIME::Types cache is private, not $::MimeTypes
+	  * $ENV{JMAP_ALWAYS_FULL} (write whole objects in override
+	    patches) is gone; nothing set it
+	  * nothing goes to STDERR: a second component of one UID without
+	    RECURRENCE-ID (which used to Dumper both events), DTEND with
+	    DURATION, an all-day DTSTART with a time zone, and a mandatory
+	    property Data::ICal finds missing are reported by the new
+	    warnings() method, the same shape as errors(); an unknown
+	    VALARM ACTION drops the alarm and is an errors() entry
+	- add t/side-effects.t
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and

@@ -119,7 +119,6 @@ sub differences {
 # A. JSCalendar -> iCalendar -> JSCalendar
 
 my %TODO_A = (
-  'alerts-untitled'                 => '_argsToVEvents dies building the VALARM DESCRIPTION from an undefined title (FATAL uninitialized warning)',
   'links-data-uri'                  => 'the reader takes an ATTACH only if it matches m{^data://}, which no data: URI does, so the link is lost',
   'locations-several'               => 'the reader reads only the first LOCATION, keyed "location"; the writer drops location keys, description and locationTypes',
   'misc-method-prodid'              => 'the writer never writes METHOD, so method is lost',
@@ -198,7 +197,6 @@ sub strip_second {
 }
 
 my $VTODO_NO_DTSTART = 'the reader drops a VTODO without DTSTART (DTSTART is optional there)';
-my $ALERT_NO_TITLE = 'the writer dies on an alert of an event without a title';
 my %TODO_B = (
   'icalendar/rdate_period.ics'        => 'an RDATE;VALUE=PERIOD patch equal to the master is written as a RECURRENCE-ID instance, which reads back as no override',
   'icalendar/recurrenceoverrides.ics' => 'the same RDATE;VALUE=PERIOD loss, and an instance SEQUENCE:0 under a master without SEQUENCE is a sequence patch that the always-written SEQUENCE then hides',
@@ -211,7 +209,6 @@ my %TODO_B = (
   'jscalendar-icalendar-29/figure-069.ics' => 'an ORGANIZER that needs an ATTENDEE to carry its properties reads back with roles.attendee',
   'jscalendar-icalendar-29/figure-070.ics' => 'an ORGANIZER that needs an ATTENDEE to carry its properties reads back with roles.attendee',
   (map { ("jscalendar-icalendar-29/figure-$_.ics" => $VTODO_NO_DTSTART) } qw(019 027 047 048 049 050 053 071 082)),
-  (map { ("jscalendar-icalendar-29/figure-$_.ics" => $ALERT_NO_TITLE) } qw(016 020 021 022 077 089 090 093 096)),
 );
 
 my @ics = map { glob("testdata/$_/*.ics") } qw(. icalendar roundtrip/ical jscalendar-icalendar-29);

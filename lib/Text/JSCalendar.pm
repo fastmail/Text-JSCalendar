@@ -1,6 +1,6 @@
 #/usr/bin/perl -cw
 use strict;
-use warnings FATAL => 'all';
+use warnings;
 package Text::JSCalendar;
 
 use Carp;
@@ -32,19 +32,14 @@ BEGIN {
   }
   no warnings 'redefine';
   *Data::ICal::Entry::Alarm::optional_unique_properties = sub { @alarm_properties };
-
-  # Suppress warnings for properties not known to Data::ICal::Entry::Event
-  my $orig_warn = $SIG{__WARN__};
-  $SIG{__WARN__} = sub {
-    return if $_[0] =~ /^Unknown property for Data::ICal::Entry::/;
-    if ($orig_warn) { $orig_warn->(@_) }
-    else { warn @_ }
-  };
 }
 
 our $UTC = DateTime::TimeZone::UTC->new();
 our $FLOATING = DateTime::TimeZone::Floating->new();
 our $LOCALE = DateTime::Locale->load('en_US');
+
+# MIME::Types->new is slow; made once, when an ATTACH first needs it
+my $MimeTypes;
 
 my (
   %ValidDay,
@@ -476,13 +471,67 @@ Returns a list of hashes, empty when nothing was dropped:
       message   => 'Invalid recurrence FREQ (fortnightly)',
     }
 
-The list is reset at the start of each of those calls.
+The list is reset at the start of each of those calls, and so is
+C<warnings>.
 
 =cut
 
 sub errors {
   my $Self = shift;
   return @{$Self->{_errors} || []};
+}
+
+=head2 $self->warnings()
+
+What the last call to C<vcalendarToEvents> or C<eventsToVCalendar> (or
+C<_argsToVCalendar>) found odd but converted anyway: an iCalendar
+component with both DTEND and DURATION, a second component of one UID
+without RECURRENCE-ID, a property Data::ICal says is missing.  The same
+shape as C<errors>, and reset with it.  The module never writes these to
+STDERR.
+
+=cut
+
+sub warnings {
+  my $Self = shift;
+  return @{$Self->{_warnings} || []};
+}
+
+sub _warning {
+  my ($Self, $uid, $component, $msg) = @_;
+  push @{$Self->{_warnings}}, {
+    uid => $uid,
+    component => $component,
+    message => $msg,
+  };
+}
+
+sub _resetDiagnostics {
+  my $Self = shift;
+  $Self->{_errors} = [];
+  $Self->{_warnings} = [];
+}
+
+# Run $code with Data::ICal's carps caught: it warns about every property
+# it does not know (COLOR, CONFERENCE, ...: most of what this module
+# writes) and about missing mandatory ones.  The first are expected; the
+# second become warnings().  Any other warning goes on to the caller's
+# handler.  (This used to be a $SIG{__WARN__} replaced for the whole
+# process when the module was loaded.)
+sub _withICalWarnings {
+  my ($Self, $code) = @_;
+  my $outer = $SIG{__WARN__};
+  local $SIG{__WARN__} = sub {
+    my $msg = $_[0];
+    return if $msg =~ /^Unknown property for Data::ICal::Entry::/;
+    if ($msg =~ /^Mandatory property for (Data::ICal::\S+) missing: (\S+)/) {
+      $Self->_warning(undef, $1, "missing mandatory property $2");
+      return;
+    }
+    if (ref $outer eq 'CODE') { $outer->(@_) }
+    else { warn @_ }
+  };
+  return $code->();
 }
 
 # Report a dropped component.  $msg is a die message: only its first
@@ -656,6 +705,13 @@ sub _hexkey {
   my $Key = sha1_hex($d->Dump() . $extra);
   $VEvent->{properties}->{updated} = $updated if defined $updated;
   return $Key;
+}
+
+# An iCalendar INTEGER as a number, or undef if it is not one.
+sub _intValue {
+  my $value = shift;
+  return undef unless defined $value and $value =~ /^\s*([-+]?\d+)\s*$/;
+  return int $1;
 }
 
 sub _saneuid {
@@ -1105,7 +1161,7 @@ sub _vEventToEvent {
 
   if (defined $Properties{dtend}{value}) {
     if (defined $Properties{duration}{value}) {
-      warn "$uid: DTEND and DURATION cannot both be set";
+      $Self->_warning($uid, uc $VEvent->{type}, "DTEND and DURATION cannot both be set; DURATION ignored");
     }
 
     ($End, $EndTimeZone) = $Self->_getDateObj($Calendar, $Properties{dtend});
@@ -1127,7 +1183,7 @@ sub _vEventToEvent {
   }
 
   if ($IsAllDay and $StartTimeZone) {
-    warn "$uid: AllDay event with timezone $StartTimeZone specified";
+    $Self->_warning($uid, uc $VEvent->{type}, "all-day DTSTART with time zone $StartTimeZone");
   }
 
   # if one is set, make sure they are both set
@@ -1343,8 +1399,7 @@ sub _vEventToEvent {
         return 1;
       }
       else {
-        warn "$uid: UNKNOWN VALARM ACTION $AlarmAction";
-        return 1;
+        die "unknown VALARM ACTION $AlarmAction\n";
       }
 
       if ($AlarmProperties{acknowledged}) {
@@ -1449,8 +1504,8 @@ sub _vEventToEvent {
     my $filename = $Attach->{params}{filename}[0];
     my $mime = $Attach->{params}{fmttype}[0];
     if (not defined $mime and $filename) {
-      $::MimeTypes ||= MIME::Types->new;
-      my $MimeTypeObj = $::MimeTypes->mimeTypeOf($filename);
+      $MimeTypes ||= MIME::Types->new;
+      my $MimeTypeObj = $MimeTypes->mimeTypeOf($filename);
       $mime = $MimeTypeObj->type() if $MimeTypeObj;
     }
 
@@ -1461,7 +1516,7 @@ sub _vEventToEvent {
       rel => 'enclosure',
       defined $filename ? (title => $filename) : (),
       defined $mime ? (contentType => $mime) : (),
-      defined $size ? (size => 0+$size) : (),
+      (defined $size && $size =~ /^\d+$/) ? (size => 0+$size) : (),
     };
   }
   # URL -> a link with rel "describedby", its title in LABEL
@@ -1589,7 +1644,10 @@ sub _vEventToEvent {
   $Event{updated} ||= DateTime->now->iso8601();
 
   # 4.1.7 sequence
-  $Event{sequence} = int($Properties{sequence}{value}) if $Properties{sequence};
+  # (a value that is not an integer is ignored; it used to die, when
+  # the module made every warning fatal)
+  my $sequence = _intValue($Properties{sequence}{value});
+  $Event{sequence} = $sequence if defined $sequence;
 
   # 4.1.8 method
   $Event{method} = $method if $method;
@@ -1699,9 +1757,9 @@ sub _vEventToEvent {
   # 4.4 Sharing and scheduling properties
 
   # 4.4.1 priority
-  if ($Properties{priority}{value}) {
-    # default is '0', so truth test is sufficient!
-    $Event{priority} = int($Properties{priority}{value});
+  # default is 0, so a truth test is sufficient
+  if (my $priority = _intValue($Properties{priority}{value})) {
+    $Event{priority} = $priority;
   }
 
   # 4.4.2 freeBusyStatus
@@ -1785,9 +1843,8 @@ sub _vEventToEvent {
       my ($Due, $DueTz) = $Self->_getDateObj($Calendar, $Properties{due});
       $Event{due} = $Due->iso8601();
     }
-    if (defined $Properties{'percent-complete'}{value}) {
-      $Event{percentComplete} = int($Properties{'percent-complete'}{value});
-    }
+    my $percent = _intValue($Properties{'percent-complete'}{value});
+    $Event{percentComplete} = $percent if defined $percent;
     if ($Properties{'estimated-duration'}{value}) {
       $Event{estimatedDuration} = uc $Properties{'estimated-duration'}{value};
     }
@@ -1875,6 +1932,7 @@ sub _wireDate {
   # format: YYYY-MM-DDTHH:MM:SS Z?
   my $isoDate = shift;
   my $timeZone = shift || $FLOATING;
+  confess "Invalid value (undefined) was not ISO8601" unless defined $isoDate;
   confess "Invalid value '$isoDate' was not ISO8601" unless $isoDate =~ m/^(\d{4,})-(\d\d)-(\d\d)T(\d\d):(\d\d):(\d\d)(Z?)$/i;
   $timeZone = 'Etc/UTC' if $7;
 
@@ -2149,6 +2207,9 @@ sub _argsToVEvents {
   }
 
   if ($Args->{alerts}) {
+    # (an untitled event still gets a readable DESCRIPTION; the title was
+    # interpolated undefined, which died under FATAL warnings)
+    my $Title = $Args->{title} // '';
     for my $id (sort keys %{$Args->{alerts}}) {
       # a bad alert drops only itself (see errors())
       my $ok = eval {
@@ -2161,8 +2222,8 @@ sub _argsToVEvents {
         my $VAlarm;
         if ($action eq 'email') {
           $VAlarm = Data::ICal::Entry::Alarm::Email->new();
-          $VAlarm->add_property(summary => "Event alert: '$Args->{title}'");
-          $VAlarm->add_property(description => "Event alert: '$Args->{title}'");
+          $VAlarm->add_property(summary => "Event alert: '$Title'");
+          $VAlarm->add_property(description => "Event alert: '$Title'");
           if ($Args->{organizerCalendarAddress}) {
             $VAlarm->add_property(attendee => $Args->{organizerCalendarAddress});
           }
@@ -2182,8 +2243,8 @@ sub _argsToVEvents {
           if ($action ne 'email') {
             $VAlarm->add_properties(
               description => (($Sign eq '-')
-                ? "'$Args->{title}' $Loc1 in $Minutes minutes"
-                : "'$Args->{title}' $Loc2 $Minutes minutes ago"),
+                ? "'$Title' $Loc1 in $Minutes minutes"
+                : "'$Title' $Loc2 $Minutes minutes ago"),
             );
           }
           $VAlarm->add_property(uid => $id);
@@ -2198,7 +2259,7 @@ sub _argsToVEvents {
           my $When = $trigger->{when} // '';
           if ($action ne 'email') {
             $VAlarm->add_properties(
-              description => "Event alert: '$Args->{title}'",
+              description => "Event alert: '$Title'",
             );
           }
           $VAlarm->add_property(uid => $id);
@@ -2429,16 +2490,28 @@ print $jscal->eventsToVCalendar(@Events);
 
 sub eventsToVCalendar {
   my $Self = shift;
-  my $VCalendar = $Self->_argsToVCalendar(\@_);
-  return $VCalendar->as_string();
+  $Self->_resetDiagnostics();
+  my $VCalendar = $Self->_buildVCalendar(\@_);
+  return $Self->_withICalWarnings(sub { $VCalendar->as_string() });
 }
 
 sub _argsToVCalendar {
   my $Self = shift;
+  $Self->_resetDiagnostics();
+  return $Self->_buildVCalendar(@_);
+}
+
+sub _buildVCalendar {
+  my $Self = shift;
   my $Item = shift;
   my %ExtraProp = @_;
+  return $Self->_withICalWarnings(sub { $Self->_buildVCalendarInner($Item, %ExtraProp) });
+}
 
-  $Self->{_errors} = [];
+sub _buildVCalendarInner {
+  my $Self = shift;
+  my $Item = shift;
+  my %ExtraProp = @_;
 
   my $VCalendar = Data::ICal->new();
   my $havepid = 0;
@@ -2736,7 +2809,7 @@ sub vcalendarToEvents {
 
   # Internal caches need to be invalidated on each item read! A bit evil really...
   delete $Self->{_tznamemap};
-  $Self->{_errors} = [];
+  $Self->_resetDiagnostics();
 
   my %map;
   my %exceptions;
@@ -2752,7 +2825,8 @@ sub vcalendarToEvents {
       # on additional recurrences after the first one, which is going to screw up
       # pretty badly because if the date has changed, then we can't even notice
       # which recurrent it was SUPPOSED to be.  *sigh*.
-      warn "DUPLICATE EVENT FOR $uid\n" . Dumper($map{$uid}, $Event);
+      $Self->_warning($uid, uc($Event->{'@type'} eq 'Task' ? 'VTODO' : 'VEVENT'),
+        "a second component without RECURRENCE-ID; read as an instance at its DTSTART");
       push @{$exceptions{$uid}}, $Event;
       $map{$uid}{_dirty} = 1;
     }
@@ -2810,7 +2884,7 @@ sub _add_override {
   my ($override, $prefix, $New, $Old) = @_;
 
   # basic case - it's not an object, so we just override
-  if ($ENV{JMAP_ALWAYS_FULL} or ref($New) ne 'HASH' or ref($Old) ne 'HASH') {
+  if (ref($New) ne 'HASH' or ref($Old) ne 'HASH') {
     $override->{$prefix} = $New;
     return;
   }
@@ -2862,8 +2936,6 @@ sub _maximise {
   my $Event = shift;
   my $Recurrence = shift;
   my $recurrenceId = shift;
-
-  #warn "MAXIMIZING EVENT INTO RECURRENCE: " . Dumper($Event, $Recurrence);
 
   my $new = _deepcopy($Event);
   $new->{start} = $recurrenceId;
