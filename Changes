@@ -29,6 +29,14 @@ Revision history for Perl extension Text::JSCalendar
 	- t/icalfiles.t marks two round trips TODO that the old
 	  NormaliseEvent hid (override patches lost on the way back)
 	- add t/normalise.t
+	- add t/roundtrip.t: JSCalendar -> iCalendar -> JSCalendar is the
+	  identity for hand-written Events and Tasks using every converted
+	  property (testdata/roundtrip/*.json), and iCalendar -> JSCalendar
+	  -> iCalendar -> JSCalendar is stable for every .ics under testdata,
+	  including the jscalendar-icalendar-29 examples
+	  (tools/extract-icalendar-examples.pl).  Known conversion bugs are
+	  TODO tests, each with its cause
+	- MANIFEST lists the tests and test data added since 0.08
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and
