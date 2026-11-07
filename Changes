@@ -1,5 +1,33 @@
 Revision history for Perl extension Text::JSCalendar
 
+0.09  unreleased
+	- follows jscalendarbis-22, jscalendar-icalendar-29 and
+	  icalendar-jscalendar-extensions-09
+	- participant keys travel in the JSID parameter of ATTENDEE and
+	  ORGANIZER, so an override patching participants/<key>/... still
+	  finds its participant after a round trip
+	- write each DELEGATED-TO/-FROM address as its own quoted value
+	- links follow their rel: enclosure (the default when rel is unset)
+	  is ATTACH, icon is IMAGE, the first describedby is URL, anything
+	  else is LINK with LINKREL; title is FILENAME on ATTACH and IMAGE and
+	  LABEL on URL and LINK.  Every non-enclosure link used to become URL,
+	  so two of them made two URL properties.  URL reads as describedby,
+	  LINK is read, IMAGE DISPLAY and SIZE are read, and every link is
+	  keyed by its JSID
+	- a floating time leaves timeZone unset instead of null
+	- an unknown CLASS is private (it was public)
+	- showWithoutTime no longer turns a timed event into a DATE one: DATE
+	  only with no timeZone and no time of day; otherwise the time and
+	  zone stay and SHOW-WITHOUT-TIME;VALUE=BOOLEAN:TRUE is written
+	- a Task alert relative to end without a due is made relative to start
+	- SENT-BY converts to the participant's sentBy, and the ORGANIZER's
+	  also to the Event or Task sentBy, both ways
+	- COLOR: an unreadable value is dropped instead of dying (which lost
+	  the whole calendar); only valid COLOR values are written
+	- RDATE;VALUE=PERIOD keeps the period's length as the override's
+	  duration
+	- add t/links.t, t/jscalendar-29.t, t/participant-jsid.t
+
 0.08  2026-10-22
 	- security: recurrenceOverrides patches could rewrite top-level-only
 	  properties when writing iCalendar, e.g. "uid" (exception emitted

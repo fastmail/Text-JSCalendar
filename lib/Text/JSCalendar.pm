@@ -1486,7 +1486,7 @@ sub _getEventsFromVCalendar {
       # ==============================================================
       # 4.3 Recurrence properties
 
-      # 4.3.1 recurrenceRule (singular object in jscalendarbis-15)
+      # 4.3.1 recurrenceRule (a singular object since jscalendarbis-15)
       if (%Recurrence) {
         $Recurrence{'@type'} = 'RecurrenceRule';
         $Event{recurrenceRule} = \%Recurrence;
@@ -1551,7 +1551,7 @@ sub _getEventsFromVCalendar {
       # 4.5.1 alerts
       $Event{alerts} = \%Alerts if %Alerts;
 
-      # version (jscalendarbis-15)
+      # version (jscalendarbis)
       $Event{version} = '2.0';
 
       # 4.6.1 localisations is not supported
@@ -1566,7 +1566,7 @@ sub _getEventsFromVCalendar {
       # longer be null, jscalendarbis-22 3.6.1, jscalendar-icalendar-29 2.1.5)
       $Event{timeZone} = $StartTimeZone if not $IsAllDay and defined $StartTimeZone and length $StartTimeZone;
 
-      # endTimeZone (jscalendarbis-15): set if end timezone differs from start
+      # endTimeZone (jscalendarbis): set if end timezone differs from start
       if (!$IsAllDay && $EndTimeZone && $StartTimeZone && $EndTimeZone ne $StartTimeZone) {
         $Event{endTimeZone} = $EndTimeZone;
       }
