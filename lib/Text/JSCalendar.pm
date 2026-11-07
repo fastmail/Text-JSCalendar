@@ -1461,8 +1461,9 @@ sub _getEventsFromVCalendar {
       # 4.4.3 privacy (from CLASS property)
       if ($Properties{class}{value}) {
         my $cls = lc($Properties{class}{value});
-        if ($cls eq 'private') { $Event{privacy} = 'private' }
-        elsif ($cls eq 'confidential') { $Event{privacy} = 'secret' }
+        if ($cls eq 'confidential') { $Event{privacy} = 'secret' }
+        # jscalendar-icalendar-29 2.3.7: any other value MUST be private
+        elsif ($cls ne 'public') { $Event{privacy} = 'private' }
       }
 
       # 4.4.4 organizerCalendarAddress
@@ -1491,8 +1492,9 @@ sub _getEventsFromVCalendar {
       # 5.1.1 start
       $Event{start} = $Start->iso8601() if ref($Start);
 
-      # 5.1.2 timeZone
-      $Event{timeZone} = $StartTimeZone if not $IsAllDay;
+      # 5.1.2 timeZone: not set for a DATE or a floating time (it can no
+      # longer be null, jscalendarbis-22 3.6.1, jscalendar-icalendar-29 2.1.5)
+      $Event{timeZone} = $StartTimeZone if not $IsAllDay and defined $StartTimeZone and length $StartTimeZone;
 
       # endTimeZone (jscalendarbis-15): set if end timezone differs from start
       if (!$IsAllDay && $EndTimeZone && $StartTimeZone && $EndTimeZone ne $StartTimeZone) {
@@ -1544,6 +1546,28 @@ sub _getEventsFromVCalendar {
   }
 
   return \@Events;
+}
+
+# jscalendar-icalendar-29 3.2: DTSTART, DUE and RECURRENCE-ID are DATE
+# only if showWithoutTime is true, there is no timeZone, and no time of
+# day appears anywhere: start, due, the durations, until and the override
+# keys.  Otherwise an event shown without time keeps its time and zone and
+# says so with SHOW-WITHOUT-TIME.
+sub _writesAsDate {
+  my $Args = shift;
+  return 0 unless $Args->{showWithoutTime};
+  return 0 if defined $Args->{timeZone} && length $Args->{timeZone};
+  my $midnight = sub { !defined $_[0] || $_[0] !~ /T/ || $_[0] =~ /T00:00(?::00(?:\.0+)?)?\z/ };
+  my $whole_days = sub { !defined $_[0] || $_[0] !~ /T/ || $_[0] =~ /T(?:0+[HMS])*\z/ };
+  my $rule = ref $Args->{recurrenceRule} eq 'HASH' ? $Args->{recurrenceRule}
+           : ref $Args->{recurrenceRules} eq 'ARRAY' ? $Args->{recurrenceRules}[0] : undef;
+  return 0 unless $midnight->($Args->{start}) && $midnight->($Args->{due})
+              && $midnight->($Args->{recurrenceId}) && $midnight->($rule ? $rule->{until} : undef)
+              && $whole_days->($Args->{duration}) && $whole_days->($Args->{estimatedDuration});
+  for my $key (keys %{ ref $Args->{recurrenceOverrides} eq 'HASH' ? $Args->{recurrenceOverrides} : {} }) {
+    return 0 unless $midnight->($key);
+  }
+  return 1;
 }
 
 sub _getTimeZone {
@@ -1817,13 +1841,14 @@ sub _argsToVEvents {
   }
 
   my $StartTimeZone = $Args->{timeZone};
-  my $IsAllDay = $Args->{showWithoutTime};
+  my $IsAllDay = _writesAsDate($Args);
   my $Start = _wireDate($Args->{start}, $StartTimeZone);
   $VEvent->add_property(dtstart => $Self->_makeVTimeObj($TimeZones, $Start, $StartTimeZone, $IsAllDay));
 
   # SHOW-WITHOUT-TIME for DATE-TIME events displayed as all-day
+  # (jscalendar-icalendar-29 2.3.38, 3.2)
   if ($Args->{showWithoutTime} && !$IsAllDay) {
-    $VEvent->add_property('show-without-time' => 'TRUE');
+    $VEvent->add_property('show-without-time' => ['TRUE', { VALUE => 'BOOLEAN' }]);
   }
 
   if ($Args->{duration}) {
