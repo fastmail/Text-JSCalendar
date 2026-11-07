@@ -86,6 +86,17 @@ sub strip_added {
   # (a Task's duration is a bug, TODO in part C, so dropped here too, to
   # keep the Task fixtures' other failures visible)
   delete $out->{duration} if !exists $in->{duration} and ($out->{duration} // '') eq 'PT0S';
+  # an ORGANIZER converts to an owner participant too when no participant
+  # is the owner (jscalendar-icalendar-29 2.3.29); the reader gives it
+  # the email and (empty) name it gives every participant
+  if (defined $in->{organizerCalendarAddress} and !exists $in->{participants}
+      and ref $out->{participants} eq 'HASH' and keys %{$out->{participants}} == 1) {
+    my ($p) = values %{$out->{participants}};
+    (my $addr = $in->{organizerCalendarAddress}) =~ s/^mailto://i;
+    delete $out->{participants} if $JSON->encode($p) eq $JSON->encode({
+      calendarAddress => $in->{organizerCalendarAddress}, email => $addr, name => '', roles => { owner => JSON::XS::true },
+    });
+  }
   # an ATTACH reads back with rel "enclosure", the default (jscalendarbis-22 1.5.11)
   for my $id (keys %{ ref $out->{links} eq 'HASH' ? $out->{links} : {} }) {
     next unless ref $in->{links} eq 'HASH' and ref $in->{links}{$id} eq 'HASH';
@@ -122,7 +133,6 @@ my %TODO_A = (
   'links-data-uri'                  => 'the reader takes an ATTACH only if it matches m{^data://}, which no data: URI does, so the link is lost',
   'locations-several'               => 'the reader reads only the first LOCATION, keyed "location"; the writer drops location keys, description and locationTypes',
   'misc-method-prodid'              => 'the writer never writes METHOD, so method is lost',
-  'organizer-without-participants'  => 'the writer skips the VEVENT of an event with organizerCalendarAddress but no participants (meant for the synthetic master)',
   'participants-expectreply'        => 'the reader takes RSVP=TRUE as false: it compares the value with "yes"',
   'participants-schedulesequence'   => 'the reader keeps X-SEQUENCE as a string',
   'participants-owner-chair'        => 'the writer writes one ROLE and OWNER wins over CHAIR, so chair is lost',
@@ -201,8 +211,8 @@ my %TODO_B = (
   'icalendar/rdate_period.ics'        => 'an RDATE;VALUE=PERIOD patch equal to the master is written as a RECURRENCE-ID instance, which reads back as no override',
   'icalendar/recurrenceoverrides.ics' => 'the same RDATE;VALUE=PERIOD loss, and an instance SEQUENCE:0 under a master without SEQUENCE is a sequence patch that the always-written SEQUENCE then hides',
   'roundtrip/ical/overrides-alarms.ics' => 'RSVP=TRUE reads as expectReply false, and ROLE=CHAIR on the organizer is lost (OWNER wins)',
-  'roundtrip/ical/standalone-instance.ics' => 'the synthetic master of a stand-alone instance is not written (organizer, no participants) and the instance SEQUENCE:0 comes back as a patch',
-  'jscalendar-icalendar-29/figure-014.ics' => 'stand-alone instances get a synthetic master without duration, so the second pass moves PT0S from the patches to the master',
+  'roundtrip/ical/standalone-instance.ics' => 'an instance without SEQUENCE under a master without sequence: the always-written SEQUENCE:0 comes back as a sequence patch',
+  'jscalendar-icalendar-29/figure-014.ics' => 'instances without SEQUENCE under a master without sequence: the always-written SEQUENCE:0 comes back as a sequence patch',
   'jscalendar-icalendar-29/figure-024.ics' => 'a binary ATTACH becomes a data: link, which the reader then refuses (m{^data://})',
   'jscalendar-icalendar-29/figure-042.ics' => 'the writer never writes METHOD',
   'jscalendar-icalendar-29/figure-064.ics' => 'the writer never writes METHOD',

@@ -66,6 +66,20 @@ Revision history for Perl extension Text::JSCalendar
 	    warnings() method, the same shape as errors(); an unknown
 	    VALARM ACTION drops the alarm and is an errors() entry
 	- add t/side-effects.t
+	- the master the reader makes up for stand-alone recurrence instances
+	  is marked with the vendor-specific property
+	  "jscalendar.fastmail.com:syntheticMaster": true (the constant
+	  SYNTHETIC_MASTER; isSyntheticMaster($Event) tests it), and the
+	  writer goes by that alone.  It used to guess, taking any object
+	  with organizerCalendarAddress and no participants for a synthetic
+	  master and silently not writing it, so a real event of that shape
+	  was lost.  A marked master writes each of its instances as a
+	  RECURRENCE-ID component (an empty patch too, not an RDATE; an
+	  excluded one not at all) and no component of its own; every
+	  instance of it is an override, even one that patches nothing; and
+	  it starts at its earliest instance, not at whichever came first
+	  in the file, so that it reads back the same
+	- add t/synthetic-master.t
 
 0.09  2026-11-07
 	- follows jscalendarbis-22, jscalendar-icalendar-29 and

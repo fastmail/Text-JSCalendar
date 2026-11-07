@@ -41,6 +41,10 @@ our $LOCALE = DateTime::Locale->load('en_US');
 # MIME::Types->new is slow; made once, when an ATTACH first needs it
 my $MimeTypes;
 
+# The vendor-specific property (jscalendarbis-22 1.8.1) that marks a
+# master the reader made up; see "Synthetic masters" in the POD.
+use constant SYNTHETIC_MASTER => 'jscalendar.fastmail.com:syntheticMaster';
+
 my (
   %ValidDay,
   %ValidFrequency,
@@ -223,7 +227,7 @@ BEGIN {
     },
   );
 
-  %MustBeTopLevel = map { $_ => 1 } qw{
+  %MustBeTopLevel = map { $_ => 1 } SYNTHETIC_MASTER, qw{
     @type
     uid
     prodId
@@ -449,6 +453,47 @@ and JSCalendar:
 sub new {
   my $class = shift;
   return bless {@_}, ref($class) || $class;
+}
+
+=head2 Synthetic masters
+
+An iCalendar object may hold only some instances of a recurring event
+(RECURRENCE-ID components without their master, as a CalDAV server
+gives an attendee invited to one occurrence: jscalendar-icalendar-29
+calls them stand-alone recurrence instances).  C<vcalendarToEvents>
+returns a single object per UID, so it makes up a master for them: its
+C<start>, C<timeZone>, C<updated> and the properties an override may not
+change come from the first instance, and every instance is one of its
+C<recurrenceOverrides> (even one that patches nothing).
+
+Such a master is marked with the vendor-specific property
+
+    "jscalendar.fastmail.com:syntheticMaster": true
+
+(jscalendarbis-22 1.8.1, so it cannot collide with a JSCalendar
+property, and JSCalendar implementations must preserve it).  The name is
+the constant C<Text::JSCalendar::SYNTHETIC_MASTER>.  It is in the object
+rather than beside it so that it survives being stored and read back
+before the object is written again.
+
+C<eventsToVCalendar> writes only the instances of a marked master, each
+as a RECURRENCE-ID component (an excluded one is not written), and never
+a component for the master itself.  Every other object is written whole.
+To turn a synthetic master into a real one, delete the property.
+C<occurrences> of a synthetic master are its override keys, and
+C<instance> gives the instance with the property removed.
+
+=head2 Text::JSCalendar->isSyntheticMaster($Event)
+
+True if C<$Event> is a master made up by the reader (see above).  May
+also be called on an object or as a function.
+
+=cut
+
+sub isSyntheticMaster {
+  my $Event = pop;
+  return 0 unless ref $Event eq 'HASH';
+  return $Event->{SYNTHETIC_MASTER()} ? 1 : 0;
 }
 
 =head2 $self->errors()
@@ -2190,13 +2235,16 @@ sub _argsToVEvents {
     $VEvent->add_property(rrule => $rule);
   }
 
+  my $Synthetic = isSyntheticMaster($Args);
   if ($Args->{recurrenceOverrides}) {
     foreach my $recurrenceId (sort keys %{$Args->{recurrenceOverrides}}) {
       my $val = $Args->{recurrenceOverrides}{$recurrenceId};
       if ($val->{excluded}) {
+        # (no master to carry an EXDATE: the instance is simply not written)
+        next if $Synthetic;
         $VEvent->add_property(exdate => $Self->_makeLTime($TimeZones, $recurrenceId, $StartTimeZone, $IsAllDay));
       }
-      elsif (keys %$val) {
+      elsif (keys %$val or $Synthetic) {
         my $SubEvent = $Self->_maximise($Args, $val, $recurrenceId);
         push @VEvents, $Self->_argsToVEvents($TimeZones, $SubEvent, [$recurrenceId, $Args]);
       }
@@ -2470,8 +2518,9 @@ sub _argsToVEvents {
     }
   }
 
-  # detect if this is a dummy top-level event and skip it
-  unshift @VEvents, $VEvent unless ($Args->{organizerCalendarAddress} and not $Args->{participants});
+  # a synthetic master (see SYNTHETIC_MASTER) has no component of its
+  # own: only its instances are written
+  unshift @VEvents, $VEvent unless $Synthetic;
 
   return @VEvents;
 }
@@ -2777,6 +2826,7 @@ sub _insert_override {
   my $Event = shift;
   my $recurrenceId = shift;
   my $Recurrence = shift;
+  my $KeepEmpty = shift;
 
   my %override;
   my %oldkeys = map { $_ => 1 } keys %$Event;
@@ -2799,7 +2849,7 @@ sub _insert_override {
   }
 
   # in theory should never happen, but you could edit something back to be identical
-  return unless %override;
+  return unless %override or $KeepEmpty;
   $Event->{recurrenceOverrides}{$recurrenceId} = \%override;
 }
 
@@ -2837,9 +2887,12 @@ sub vcalendarToEvents {
 
   foreach my $uid (keys %exceptions) {
     unless ($map{$uid}) {
-      # create a synthetic top-level
-      my $First = $exceptions{$uid}[0];
+      # create a synthetic top-level, and say so (see SYNTHETIC_MASTER),
+      # from the earliest instance, so that it does not depend on the
+      # order of the components (the writer sorts them)
+      my ($First) = sort { _compareInstances($a, $b) } @{$exceptions{$uid}};
       $map{$uid} = {
+        SYNTHETIC_MASTER() => $JSON::true,
         uid => $uid,
         # required at top level, but may be different in recurrences
         # so not in MustBeTopLevel
@@ -2859,11 +2912,24 @@ sub vcalendarToEvents {
         $Date->set_time_zone($map{$uid}{timeZone}) if $map{$uid}{timeZone};
         $recurrenceId = $Date->iso8601();
       }
-      _insert_override($map{$uid}, $recurrenceId, $SubEvent);
+      # every instance of a synthetic master is an override, even one
+      # that patches nothing: there is no rule or RDATE to recur from
+      _insert_override($map{$uid}, $recurrenceId, $SubEvent, isSyntheticMaster($map{$uid}));
     }
   }
 
   return map { $map{$_} } sort keys %map;
+}
+
+# Order two instances by their RECURRENCE-ID (then DTSTART)
+sub _compareInstances {
+  my ($A, $B) = @_;
+  my ($ra, $rb) = map { $_->{_recurrenceObj} } $A, $B;
+  if ($ra and $rb) {
+    my $c = DateTime->compare($ra, $rb);
+    return $c if $c;
+  }
+  return ($ra ? 0 : 1) <=> ($rb ? 0 : 1) || ($A->{start} // '') cmp ($B->{start} // '');
 }
 
 sub _quotekey {
@@ -2941,6 +3007,7 @@ sub _maximise {
   $new->{start} = $recurrenceId;
   delete $new->{recurrenceRule};
   delete $new->{recurrenceOverrides};
+  delete $new->{SYNTHETIC_MASTER()};
 
   foreach my $path (sort keys %$Recurrence) {
     # overrides can't change the identity or type of the master event
