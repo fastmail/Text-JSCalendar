@@ -3331,6 +3331,28 @@ sub _expandRule {
     return @days;
   };
 
+  # the days of the given months of year $y that pass every date filter:
+  # $daysOf over only the months byMonth allows, or, with byMonthDay (and
+  # no byWeekNo or byYearDay to widen it), straight from its values -- not
+  # every day of the year tested in turn
+  my $daysOfMonths = sub {
+    my ($y, @months) = @_;
+    @months = grep { $by{byMonth}{$_} } @months if $by{byMonth};
+    if ($by{byMonthDay} and !$by{byWeekNo} and !$by{byYearDay}) {
+      my %days;
+      foreach my $m (@months) {
+        my $dim = _daysInMonth($y, $m);
+        foreach my $v (@{$by{byMonthDay}}) {
+          my $d = $v > 0 ? $v : $dim + 1 + $v;
+          $days{_dayNumber($y, $m, $d)} = 1 if $d >= 1 and $d <= $dim;
+        }
+      }
+      return grep { my @c = _civil($_); $dayMatchesUpToMonthDay->($_, @c) and $dayMatchesByDay->($_, @c) }
+             sort { $a <=> $b } keys %days;
+    }
+    return map { $daysOf->(_dayNumber($y, $_, 1), _dayNumber($y, $_, _daysInMonth($y, $_))) } @months;
+  };
+
   my @hours   = sort { $a <=> $b } keys %{$inList{byHour}};
   my @minutes = sort { $a <=> $b } keys %{$inList{byMinute}};
   my @seconds = sort { $a <=> $b } keys %{$inList{bySecond}};
@@ -3350,15 +3372,13 @@ sub _expandRule {
     if ($freq eq 'yearly') {
       my $y = $sy + $n * $interval;
       $periodStart = sprintf('%04d-01-01T00:00:00', $y);
-      @days = $skipping ? $skipDays->($y, 1 .. 12)
-                        : $daysOf->(_dayNumber($y, 1, 1), _dayNumber($y, 12, 31));
+      @days = $skipping ? $skipDays->($y, 1 .. 12) : $daysOfMonths->($y, 1 .. 12);
     }
     elsif ($freq eq 'monthly') {
       my $mi = ($sy * 12 + $sm - 1) + $n * $interval;
       my ($y, $m) = (int($mi / 12), $mi % 12 + 1);
       $periodStart = sprintf('%04d-%02d-01T00:00:00', $y, $m);
-      @days = $skipping ? $skipDays->($y, $m)
-                        : $daysOf->(_dayNumber($y, $m, 1), _dayNumber($y, $m, _daysInMonth($y, $m)));
+      @days = $skipping ? $skipDays->($y, $m) : $daysOfMonths->($y, $m);
     }
     elsif ($freq eq 'weekly') {
       my $first = $startDay - ((_weekday($startDay) - $wkst) % 7) + 7 * $n * $interval;
