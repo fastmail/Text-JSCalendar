@@ -1127,9 +1127,26 @@ sub CompareEvents {
   return _safeeq($E1, $E2);
 }
 
+# Text::VCardFast recurses once per BEGIN, in C: nesting tens of thousands
+# deep overflows the stack and kills the process (no eval can catch that).
+# Real iCalendar nests four or so (VCALENDAR, VEVENT, VALARM); refuse
+# anything deeper than this before it gets there.
+our $MAX_NESTING = 16;
+sub _nesting_ok {
+  my ($text) = @_;
+  my ($depth, $max) = (0, 0);
+  while ($text =~ /^(BEGIN|END)[ \t]*:/mgi) {
+    if (uc $1 eq 'BEGIN') { $depth++; return 0 if $depth > $MAX_NESTING }
+    else { $depth-- if $depth > 0 }
+  }
+  return 1;
+}
+
 sub _getEventsFromVCalendar {
   my ($Self, $VCalendar) = @_;
 
+  confess "Error parsing VCalendar data: components nested more than $MAX_NESTING deep\n"
+    unless _nesting_ok($VCalendar);
   my $CalendarData = eval { vcard2hash($VCalendar, multival => ['rrule'], only_one => 1) }
     or confess "Error parsing VCalendar data: $@\n\n$VCalendar";
 
@@ -3009,6 +3026,10 @@ a class method.
 =cut
 
 our $MaxOccurrences = 5000;
+# Bounds on one rule's expansion (a rule is untrusted input): the periods
+# and candidate dates looked at, and the entries of any one BYxxx list.
+our $MaxExpandWork = 250_000;
+our $MaxRuleList   = 400;
 
 sub occurrences {
   my ($Self, $Event, %Opts) = @_;
@@ -3170,11 +3191,21 @@ sub _expandRule {
     my $list = _list($Rule->{$name}) or next;
     $by{$name} = [ map { croak "recurrence $name ($_) is not valid" unless defined $_ and /^[-+]?\d+$/; 0 + $_ } @$list ];
   }
-  my %range = (byHour => [0, 23], byMinute => [0, 59], bySecond => [0, 60]);
+  # RFC 5545 S3.3.10's ranges (a negative day counts from the end), and no
+  # list longer than any calendar could need: a rule is untrusted input,
+  # and every entry is work in every period
+  my %range = (byHour => [0, 23], byMinute => [0, 59], bySecond => [0, 60],
+               byMonthDay => [-31, 31], byYearDay => [-366, 366], byWeekNo => [-53, 53],
+               bySetPosition => [-366, 366]);
   foreach my $name (keys %range) {
     next unless $by{$name};
+    croak "recurrence $name has too many entries" if @{$by{$name}} > $MaxRuleList;
     croak "recurrence $name is out of range"
-      if grep { $_ < $range{$name}[0] or $_ > $range{$name}[1] } @{$by{$name}};
+      if grep { $_ < $range{$name}[0] or $_ > $range{$name}[1] or $_ == 0 && $range{$name}[0] < 0 } @{$by{$name}};
+  }
+  foreach my $name (qw(byMonth byDay)) {
+    my $list = _list($Rule->{$name}) or next;
+    croak "recurrence $name has too many entries" if @$list > $MaxRuleList;
   }
   if (my $list = _list($Rule->{byMonth})) {
     # a leap month ("5L") never matches in the Gregorian calendar
@@ -3412,8 +3443,12 @@ sub _expandRule {
     $n0 = 0 if $n0 < 0;
   }
 
+  # a hard bound on the work one expansion may do: whatever the rule, it
+  # ends after this many periods and candidates looked at
+  my $work = 0;
   for (my $n = $n0; ; $n++) {
     my @c = $candidates->($n);
+    return if ($work += 1 + @c) > $MaxExpandWork;
     return if defined $until and $periodStart gt $until;
     return if defined $before and $periodStart ge $before;
     my $any = 0;

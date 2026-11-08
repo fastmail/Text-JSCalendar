@@ -1,5 +1,18 @@
 Revision history for Perl extension Text::JSCalendar
 
+0.11  unreleased
+	- security: input nested more than 16 components deep is refused
+	  before Text::VCardFast sees it (its parser recurses in C once per
+	  BEGIN: tens of thousands of levels overflowed the stack and killed
+	  the process, which no eval can catch)
+	- security: a recurrence rule's expansion is bounded: it ends after
+	  looking at 250,000 periods and candidates ($MaxExpandWork), whatever
+	  the rule (FREQ=MINUTELY;BYSETPOS=2 with no bounds, or SECONDLY with
+	  a huge COUNT, ran for minutes); byMonthDay, byYearDay, byWeekNo and
+	  bySetPosition are checked against RFC 5545's ranges, and a BYxxx
+	  list may have at most 400 entries ($MaxRuleList)
+	- add t/hostile.t
+
 0.10  2026-11-07
 	- NormaliseEvent (and so CompareEvents) keeps what it does not know
 	  instead of deleting it.  It used to delete every key missing from
