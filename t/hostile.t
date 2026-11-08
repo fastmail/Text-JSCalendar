@@ -46,4 +46,26 @@ my $jscal = Text::JSCalendar->new;
   }
 }
 
+# a trailing backslash in a parameter value must not break the line: it
+# has no meaning there, and is dropped
+{
+  require JSON::PP;
+  my $ics = $jscal->eventsToVCalendar({ '@type' => 'Event', uid => 'b1', start => '2026-01-01T10:00:00',
+    timeZone => 'Etc/UTC', locale => "en \\",
+    participants => { p => { '@type' => 'Participant', name => "Evil \\", calendarAddress => 'mailto:e@x',
+                             roles => { attendee => JSON::PP::true() } } } });
+  my @e = eval { $jscal->vcalendarToEvents($ics) };
+  is(scalar @e, 1, 'a backslash in CN and LANGUAGE: the event still reads back') or diag $@;
+  is((values %{ $e[0]{participants} })[0]{name}, 'Evil ', 'without the backslash');
+}
+
+# rscale and skip go into the RRULE as written: anything else is refused
+{
+  my $j = Text::JSCalendar->new;
+  my $ics = $j->eventsToVCalendar({ '@type' => 'Event', uid => 'r', start => '2026-01-01T10:00:00',
+    recurrenceRule => { '@type' => 'RecurrenceRule', frequency => 'weekly', rscale => 'gregorian;COUNT=1' } });
+  unlike($ics, qr/COUNT=1/, 'an rscale carrying another rule part is not written');
+  like(($j->errors)[0]{message}, qr/rscale/, 'and the event is reported');
+}
+
 done_testing;

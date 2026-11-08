@@ -2660,6 +2660,10 @@ sub _sanitizeParam {
   $val =~ s/[\r\n]+/ /g;
   # DQUOTE can't be escaped either; Data::ICal drops it with a warning
   $val =~ s/[\x00-\x08\x0a-\x1f\x7f"]//g;
+  # nor a backslash: RFC 5545 gives it no meaning in a parameter, but
+  # Text::VCardFast reads \; \: \" as escapes, so "Evil \" swallowed the
+  # next parameter, or left the line unreadable
+  $val =~ s/\\//g;
   return $val;
 }
 
@@ -2782,6 +2786,12 @@ sub _makeRecurrence {
   }
 
   if ($Args->{rscale}) {
+    # written into the RRULE as they are: an rscale like "gregorian;COUNT=1"
+    # would add rule parts past the checks below (RFC 7529: an rscale is a
+    # calendar name; skip is one of three values)
+    confess "recurrence rscale ($Args->{rscale}) is not valid" unless $Args->{rscale} =~ /\A[A-Za-z0-9-]{1,64}\z/;
+    confess "recurrence skip ($Args->{skip}) is not valid"
+      if exists $Args->{skip} && ($Args->{skip} // '') !~ /\A(?:omit|backward|forward)\z/i;
     $Recurrence{RSCALE} = uc $Args->{rscale};
     $Recurrence{SKIP} = uc $Args->{skip} if exists $Args->{skip};
   }
