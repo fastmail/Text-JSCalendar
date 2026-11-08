@@ -3604,11 +3604,13 @@ sub _maximise {
   my $Recurrence = shift;
   my $recurrenceId = shift;
 
-  my $new = _deepcopy($Event);
+  # a copy of the master without its rule and overrides (copying them for
+  # every override and then dropping them made writing an event O(N^2) in
+  # its overrides)
+  my %master = %$Event;
+  delete @master{'recurrenceRule', 'recurrenceOverrides', SYNTHETIC_MASTER()};
+  my $new = _deepcopy(\%master);
   $new->{start} = $recurrenceId;
-  delete $new->{recurrenceRule};
-  delete $new->{recurrenceOverrides};
-  delete $new->{SYNTHETIC_MASTER()};
 
   foreach my $path (sort keys %$Recurrence) {
     # overrides can't change the identity or type of the master event

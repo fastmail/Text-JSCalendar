@@ -27,6 +27,8 @@ Revision history for Perl extension Text::JSCalendar
 	  the next one allowed, as it did for a rejected day: MINUTELY;BYHOUR=9
 	  over a month took 111ms, now 0.7ms, and such rules no longer stop at
 	  the work bound before reaching a distant range
+	- writing a recurring event no longer copies all its overrides once per
+	  override (400 overrides: 234ms, now 186ms)
 
 0.10  2026-11-07
 	- NormaliseEvent (and so CompareEvents) keeps what it does not know
