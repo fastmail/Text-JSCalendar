@@ -3497,6 +3497,28 @@ sub _expandRule {
       $n += $left;
       $sinceLast += $left;
     }
+    elsif ($subDaily and !@c) {
+      # the day passed but this period's hour (or minute) did not: jump to
+      # the last period that starts before the next allowed one, as above
+      # for a day (MINUTELY;BYHOUR=9 looked at every minute of the day)
+      my $unit = { hourly => 3600, minutely => 60, secondly => 1 }->{$freq};
+      my ($H, $M, $S) = map { 0 + $_ } $periodStart =~ /T(\d\d):(\d\d):(\d\d)$/;
+      my $now = $H * 3600 + $M * 60 + $S;
+      my $next;
+      if (%{$inList{byHour}} and !$inList{byHour}{$H}) {
+        my ($h) = grep { $_ > $H } @hours;
+        $next = defined $h ? $h * 3600 : 86400;
+      }
+      elsif ($freq ne 'hourly' and %{$inList{byMinute}} and !$inList{byMinute}{$M}) {
+        my ($m) = grep { $_ > $M } @minutes;
+        $next = $H * 3600 + (defined $m ? $m * 60 : 3600);
+      }
+      if (defined $next) {
+        my $left = int(($next - $now - 1) / ($unit * $interval));
+        $n += $left;
+        $sinceLast += $left;
+      }
+    }
   }
 }
 

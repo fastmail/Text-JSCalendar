@@ -23,6 +23,10 @@ Revision history for Perl extension Text::JSCalendar
 	  byMonthDay, not by testing every day of the year: a birthday in a
 	  one-month range takes 0.03ms, was 0.66ms (the same occurrences for
 	  4000 random rules)
+	- a sub-daily rule whose byHour or byMinute rejects a period jumps to
+	  the next one allowed, as it did for a rejected day: MINUTELY;BYHOUR=9
+	  over a month took 111ms, now 0.7ms, and such rules no longer stop at
+	  the work bound before reaching a distant range
 
 0.10  2026-11-07
 	- NormaliseEvent (and so CompareEvents) keeps what it does not know
