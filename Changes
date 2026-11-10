@@ -1,6 +1,6 @@
 Revision history for Perl extension Text::JSCalendar
 
-0.11  unreleased
+0.11  2026-11-10
 	- security: input nested more than 16 components deep is refused
 	  before Text::VCardFast sees it (its parser recurses in C once per
 	  BEGIN: tens of thousands of levels overflowed the stack and killed
